@@ -69,7 +69,12 @@ The coding agent sends you:
 
 ## YOUR OUTPUT FORMAT
 
-Respond with a JSON object matching this schema:
+Respond with a JSON object matching this schema.
+
+**Formatting rules:**
+- Output must be **valid JSON** (no trailing commas, no comments).
+- Output must be **raw JSON only** (no Markdown, no code fences).
+- Wherever the schema shows `"A" | "B"` enum options, choose **exactly one** value in your output.
 
 ```json
 {

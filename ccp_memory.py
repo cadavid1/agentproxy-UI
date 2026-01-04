@@ -89,6 +89,14 @@ class DebtItem:
 
 
 @dataclass
+class ReferenceScreenshot:
+    """A screenshot the user wants the result to look like."""
+    path: str  # Path to the screenshot file
+    description: str = ""  # What this screenshot shows / what to match
+    added_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+
+@dataclass
 class SessionContext:
     """
     Tier 2: High-level context persisting across hours/days.
@@ -98,6 +106,7 @@ class SessionContext:
     - Constraints and requirements
     - Acceptance criteria for completion
     - Technical debt being tracked
+    - Reference screenshots to match
     """
     session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     user_mission: str = ""
@@ -106,6 +115,7 @@ class SessionContext:
     acceptance_criteria: List[str] = field(default_factory=list)
     project_files: Dict[str, str] = field(default_factory=dict)  # filename -> summary
     technical_debt: List[DebtItem] = field(default_factory=list)
+    reference_screenshots: List[ReferenceScreenshot] = field(default_factory=list)
     working_dir: str = "."
     started_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_active: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -146,6 +156,14 @@ class SessionContext:
         ))
         self.touch()
     
+    def add_screenshot(self, path: str, description: str = "") -> None:
+        """Add a reference screenshot - 'build something like this'."""
+        self.reference_screenshots.append(ReferenceScreenshot(
+            path=path,
+            description=description,
+        ))
+        self.touch()
+    
     def increment_task(self) -> None:
         """Increment task counter."""
         self.task_count += 1
@@ -156,6 +174,8 @@ class SessionContext:
         data = asdict(self)
         # Convert DebtItem list to dicts
         data["technical_debt"] = [asdict(d) for d in self.technical_debt]
+        # Convert ReferenceScreenshot list to dicts
+        data["reference_screenshots"] = [asdict(s) for s in self.reference_screenshots]
         return data
     
     @classmethod
@@ -164,6 +184,9 @@ class SessionContext:
         # Convert debt dicts back to DebtItem
         debt_list = [DebtItem(**d) for d in data.get("technical_debt", [])]
         data["technical_debt"] = debt_list
+        # Convert screenshot dicts back to ReferenceScreenshot
+        screenshot_list = [ReferenceScreenshot(**s) for s in data.get("reference_screenshots", [])]
+        data["reference_screenshots"] = screenshot_list
         return cls(**data)
     
     def save(self, sessions_dir: Path) -> None:

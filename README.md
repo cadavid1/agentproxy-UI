@@ -35,11 +35,49 @@ A Python framework for running Claude CLI as a subprocess with programmatic cont
 # Single task
 python -m interactive_labs "Create a hello world Flask app"
 
-# Interactive mode
-python -m interactive_labs --interactive
+# With a mission
+python -m interactive_labs --mission "Build REST API" "Start with user endpoints"
+
+# Resume existing session
+python -m interactive_labs --session abc123 "Continue the work"
 
 # With options
 python -m interactive_labs -d ./myproject --display simple "Fix bug in app.py"
+```
+
+### Reference Screenshots
+
+Attach screenshots to show CCP what you want to build. Supports PNG, JPG, JPEG, GIF, WebP, BMP.
+
+```bash
+# Simple: just pass image paths (uses filename as description)
+python -m interactive_labs \
+  --add-screenshot /path/to/mockup.png \
+  --add-screenshot /path/to/login.jpg \
+  "Build a web app that looks exactly like these screenshots"
+
+# With custom descriptions (--screenshot takes path + description)
+python -m interactive_labs \
+  --screenshot /path/to/mockup.png "Main dashboard - must look like this" \
+  --screenshot /path/to/login.png "Login page design" \
+  "Build a web app matching these designs"
+```
+
+**Images are sent directly to Gemini** for visual context during CCP's thinking and supervision.
+
+Screenshots are stored in the session JSON:
+
+```json
+{
+  "session_id": "abc123",
+  "reference_screenshots": [
+    {
+      "path": "/path/to/mockup.png",
+      "description": "Main dashboard - must look like this",
+      "added_at": "2026-01-03T21:35:29"
+    }
+  ]
+}
 ```
 
 ### Programmatic

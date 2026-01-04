@@ -16,7 +16,7 @@ Non-negotiable security rules that CCP will BLOCK violations of.
 - ❌ `eval()` with user input
 - ❌ `exec()` with user input
 - ❌ `os.system()` with unsanitized input
-- ❌ `subprocess.shell=True` with user input
+- ❌ `subprocess.run(..., shell=True)` with user input
 - ❌ SQL string concatenation (use parameterized queries)
 
 ### Path Traversal

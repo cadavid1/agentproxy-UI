@@ -20,6 +20,7 @@ from typing import Optional
 
 from ccp import CCP, list_sessions
 from models import EventType
+from pathlib import Path
 
 
 class CLI:
@@ -93,6 +94,21 @@ Examples:
             help="Disable auto-QA review after task completion"
         )
         
+        parser.add_argument(
+            "--screenshot",
+            nargs=2,
+            metavar=("PATH", "DESCRIPTION"),
+            action="append",
+            help="Attach reference screenshot: --screenshot /path/to/img.png 'description'"
+        )
+        
+        parser.add_argument(
+            "--add-screenshot",
+            action="append",
+            metavar="PATH",
+            help="Add screenshot to current session (repeatable): --add-screenshot img1.png --add-screenshot img2.jpg"
+        )
+        
         return parser.parse_args()
     
     def run(self) -> int:
@@ -102,6 +118,9 @@ Examples:
         # Handle --list-sessions
         if args.list_sessions:
             return self._list_sessions()
+        
+        # Handle --add-screenshot - attach to task, not standalone
+        # Screenshots will be attached when task runs
         
         # Require task if not listing sessions
         if not args.task:
@@ -122,6 +141,30 @@ Examples:
         
         task = " ".join(args.task)
         return self._run_task(args, task)
+    
+    def _attach_screenshots(self, ccp: 'CCP', paths: list) -> int:
+        """Attach screenshots to the current session."""
+        SUPPORTED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
+        attached = 0
+        
+        for path in paths:
+            p = Path(path)
+            if not p.exists():
+                print(f"⚠ Screenshot not found: {path}", file=sys.stderr)
+                continue
+            
+            ext = p.suffix.lower()
+            if ext not in SUPPORTED_EXTENSIONS:
+                print(f"⚠ Unsupported image format: {path} (supported: {', '.join(SUPPORTED_EXTENSIONS)})", file=sys.stderr)
+                continue
+            
+            # Use filename as description
+            description = p.stem.replace('_', ' ').replace('-', ' ')
+            ccp.memory.session.add_screenshot(str(p.absolute()), description)
+            print(f"📸 Attached: {path}")
+            attached += 1
+        
+        return attached
     
     def _list_sessions(self) -> int:
         """List all available sessions."""
@@ -159,6 +202,19 @@ Examples:
                 auto_verify=not args.no_verify,
                 auto_qa=not args.no_qa,
             )
+            
+            # Attach screenshots if provided (--screenshot with description)
+            if args.screenshot:
+                for path, description in args.screenshot:
+                    if Path(path).exists():
+                        self.ccp.memory.session.add_screenshot(path, description)
+                        print(f"📸 Attached: {path}")
+                    else:
+                        print(f"⚠ Screenshot not found: {path}", file=sys.stderr)
+            
+            # Attach screenshots from --add-screenshot (just paths, auto-description)
+            if args.add_screenshot:
+                self._attach_screenshots(self.ccp, args.add_screenshot)
             
             print(f"Session: {self.ccp.session_id}")
             

@@ -66,10 +66,11 @@ class RealtimeDisplay:
         Claude  (MAGENTA)  ┃ Claude ┃  Claude Code subprocess (execution)
     """
     
-    # Source-to-prefix mapping - CCP, CCP-thinking, and Claude
+    # Source-to-prefix mapping - CCP, CCP-thinking, CCP-NextStep, and Claude
     SOURCE_PREFIXES = {
         "ccp":         (Colors.CYAN,    "│ CCP         │"),
         "thinking":    (Colors.BLUE,    "│ CCP-thinking│"),
+        "nextstep":    (Colors.BRIGHT_YELLOW + Colors.BOLD, "│ CCP-nextstep│"),
         "claude":      (Colors.MAGENTA, "┃ Claude      ┃"),
     }
     
@@ -194,6 +195,7 @@ class RealtimeDisplay:
         self._write("")
         self._write(f"{Colors.CYAN}│ CCP         │{Colors.RESET} = CCP orchestration")
         self._write(f"{Colors.BLUE}│ CCP-thinking│{Colors.RESET} = CCP reasoning about Claude's output")
+        self._write(f"{Colors.BRIGHT_YELLOW}{Colors.BOLD}│ CCP-nextstep│{Colors.RESET} = CCP decision after Claude exits")
         self._write(f"{Colors.MAGENTA}┃ Claude      ┃{Colors.RESET} = Claude Code subprocess")
         self._write("")
     
@@ -326,6 +328,10 @@ class RealtimeDisplay:
         )
         proc_prefix = f"{source_color}{source_label}{Colors.RESET} "
         
+        # CCP-nextstep: entire content is yellow bold (high visibility)
+        if source == "nextstep":
+            color = Colors.BRIGHT_YELLOW + Colors.BOLD
+        
         # Build output line
         parts = [proc_prefix]
         
@@ -333,8 +339,11 @@ class RealtimeDisplay:
             ts = event.timestamp.strftime("%H:%M:%S")
             parts.append(f"{Colors.DIM}[{ts}]{Colors.RESET} ")
         
-        # Colorize action tags in content
-        content = self._colorize_action_tags(event.content)
+        # Colorize action tags in content (skip for nextstep - already fully colored)
+        if source == "nextstep":
+            content = event.content
+        else:
+            content = self._colorize_action_tags(event.content)
         
         parts.append(f"{color}{prefix}{content}{Colors.RESET}")
         
