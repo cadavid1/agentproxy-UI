@@ -1,0 +1,5 @@
+# Interactive Labs - Claude Code Process Controller
+# No external dependencies required - uses only Python stdlib
+#
+# Optional dependencies for enhanced features:
+# pexpect>=4.8.0     # Alternative PTY handling (cross-platform)

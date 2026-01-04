@@ -1,0 +1,15 @@
+{
+  "session_id": "3227436f",
+  "user_mission": "",
+  "user_prompt": "Create a tiny.py that prints Tiny",
+  "user_constraints": [],
+  "acceptance_criteria": [],
+  "project_files": {
+    "tiny.py": ""
+  },
+  "technical_debt": [],
+  "working_dir": "/Users/ethw/Desktop/GIT-Aertoria/automatic-linqlabs",
+  "started_at": "2026-01-03T19:03:34.042618",
+  "last_active": "2026-01-03T19:03:46.014748",
+  "task_count": 1
+}

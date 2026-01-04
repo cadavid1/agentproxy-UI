@@ -1,0 +1,15 @@
+{
+  "session_id": "f905427e",
+  "user_mission": "",
+  "user_prompt": "Create supervisor_test.py that has functions add(a,b), subtract(a,b), and a main block that tests them. Run it and show output.",
+  "user_constraints": [],
+  "acceptance_criteria": [],
+  "project_files": {
+    "supervisor_test.py": ""
+  },
+  "technical_debt": [],
+  "working_dir": "/Users/ethw/Desktop/GIT-Aertoria/automatic-linqlabs",
+  "started_at": "2026-01-03T19:45:01.833201",
+  "last_active": "2026-01-03T19:45:37.815400",
+  "task_count": 1
+}

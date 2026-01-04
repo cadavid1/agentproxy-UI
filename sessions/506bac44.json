@@ -1,0 +1,15 @@
+{
+  "session_id": "506bac44",
+  "user_mission": "",
+  "user_prompt": "Build a Python calculator package with: 1) A calc.py module with add, subtract, multiply, divide functions that handle edge cases (division by zero, type errors). 2) A build.sh shell script that runs chmod +x, creates a __init__.py, and echoes 'Build complete'. 3) A test_calc.py with pytest tests for all functions including edge cases. 4) Run the build.sh script. 5) Run pytest and show all test results.",
+  "user_constraints": [],
+  "acceptance_criteria": [],
+  "project_files": {
+    "__init__.py": ""
+  },
+  "technical_debt": [],
+  "working_dir": "/Users/ethw/Desktop/GIT-Aertoria/automatic-linqlabs/sandbox",
+  "started_at": "2026-01-03T19:50:42.158662",
+  "last_active": "2026-01-03T19:54:01.742180",
+  "task_count": 1
+}

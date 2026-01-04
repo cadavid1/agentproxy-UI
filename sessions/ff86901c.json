@@ -1,0 +1,15 @@
+{
+  "session_id": "ff86901c",
+  "user_mission": "",
+  "user_prompt": "Create every_test.py that prints Every",
+  "user_constraints": [],
+  "acceptance_criteria": [],
+  "project_files": {
+    "every_test.py": ""
+  },
+  "technical_debt": [],
+  "working_dir": "/Users/ethw/Desktop/GIT-Aertoria/automatic-linqlabs",
+  "started_at": "2026-01-03T19:33:31.983136",
+  "last_active": "2026-01-03T19:33:42.329054",
+  "task_count": 1
+}

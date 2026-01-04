@@ -1,0 +1,15 @@
+{
+  "session_id": "c536921d",
+  "user_mission": "",
+  "user_prompt": "Create a simple hello.py that prints Hello World",
+  "user_constraints": [],
+  "acceptance_criteria": [],
+  "project_files": {
+    "hello.py": ""
+  },
+  "technical_debt": [],
+  "working_dir": "/Users/ethw/Desktop/GIT-Aertoria/automatic-linqlabs/labs",
+  "started_at": "2026-01-03T18:57:36.099232",
+  "last_active": "2026-01-03T18:57:48.027396",
+  "task_count": 1
+}
