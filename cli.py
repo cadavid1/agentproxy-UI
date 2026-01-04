@@ -217,14 +217,54 @@ Examples:
                 self._attach_screenshots(self.ccp, args.add_screenshot)
             
             print(f"Session: {self.ccp.session_id}")
+            print()
+            
+            # Color legend
+            print("┌───────────────────────────────────────────────────────────┐")
+            print("│ \033[1mCOLOR LEGEND\033[0m                                              │")
+            print("├───────────────────────────────────────────────────────────┤")
+            print("│ Claude subprocess    \033[35m┃ Claude ┃ magenta border\033[0m          │")
+            print("│ CCP orchestrator     \033[36m│ CCP    │ cyan border\033[0m             │")
+            print("├───────────────────────────────────────────────────────────┤")
+            print("│ Tool calls           \033[93m■ yellow text\033[0m                      │")
+            print("│ Tool results         \033[95m■ magenta text\033[0m                     │")
+            print("│ Thinking/reasoning   \033[96m■ cyan text\033[0m                        │")
+            print("│ Completed/success    \033[92m■ green text\033[0m                       │")
+            print("│ Errors               \033[91m■ red text\033[0m                         │")
+            print("└───────────────────────────────────────────────────────────┘")
+            print()
             
             exit_code = 0
             for event in self.ccp.run_task(task):
                 if self._shutdown_requested:
                     break
                 
+                # Display each event in real-time
+                source = event.metadata.get("source", "ccp") if event.metadata else "ccp"
+                is_claude = source == "claude"
+                
+                # Colored prefix based on source
+                if is_claude:
+                    prefix = "\033[35m┃ Claude ┃\033[0m"  # Magenta for Claude
+                else:
+                    prefix = "\033[36m│ CCP    │\033[0m"  # Cyan for CCP
+                
+                # Color content based on event type
                 if event.event_type == EventType.ERROR:
+                    print(f"{prefix} \033[91m{event.content}\033[0m")  # Red
                     exit_code = 1
+                elif event.event_type == EventType.COMPLETED:
+                    print(f"{prefix} \033[92m{event.content}\033[0m")  # Green
+                elif event.event_type == EventType.THINKING:
+                    print(f"{prefix} \033[96m{event.content}\033[0m")  # Bright cyan
+                elif event.event_type == EventType.TOOL_CALL:
+                    print(f"{prefix} \033[93m{event.content}\033[0m")  # Yellow
+                elif event.event_type == EventType.TOOL_RESULT:
+                    print(f"{prefix} \033[95m{event.content}\033[0m")  # Magenta
+                else:
+                    print(f"{prefix} {event.content}")  # Default
+                
+                sys.stdout.flush()
             
             return exit_code
             
