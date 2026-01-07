@@ -1,6 +1,37 @@
-# CCP - Code Custodian Persona
+# Agent Proxy
 
-AI supervisor for Claude Code.
+An AI supervisor layer that orchestrates coding agents (Claude Code, Cursor, etc.) to complete complex development tasks autonomously.
+
+## How It Works
+
+Agent Proxy sits between human developers and AI coding agents, acting as an intelligent supervisor that:
+
+1. **Maintains Context** - Stores project context, coding standards, and session history
+2. **Supervises & Assigns** - Breaks down tasks and delegates to coding agents
+3. **Unblocks** - Auto-responds to agent clarification requests
+4. **Verifies** - Reviews agent output for correctness and quality
+5. **Aligns & Refocuses** - Keeps agents on track toward the goal
+
+### Architecture
+
+![Architecture](docs/images/architecture.png)
+
+The proxy maintains three types of context:
+- **Project Context**: Company mission, OKRs, competitive analysis, mockups
+- **Guidance & Practice**: Coding standards, QA checklists, team preferences
+- **Sprint Session Context**: Current tasks and their status
+
+### Execution Flow
+
+![Sequence](docs/images/sequence.png)
+
+1. Human provides one-time project context setup
+2. Human assigns high-level tasks
+3. Proxy Agent thinks, plans, and invokes the Coding Agent
+4. Coding Agent executes steps, may ask for clarification
+5. Proxy Agent auto-replies or redirects as needed
+6. Proxy verifies results and updates task status
+7. Final delivery presented to human
 
 ## Setup
 ```bash
@@ -13,6 +44,12 @@ echo "GEMINI_API_KEY=your_key" > .env
 python cli.py "Create hello.py"
 python cli.py -d ./myproject "Fix bug"
 python cli.py --add-screenshot design.png "Match this UI"
+```
+
+```bash
+alias ccp='/Users/ethw/Desktop/GIT-Aertoria/agentproxy/cli.py'
+
+ccp --add-screenshot /Users/ethw/Desktop/cc.jpg "Build a webapplication Match exactly this UI to pixle-perfect, at the same time, add more buttons and features for user management"
 ```
 
 ## Mode 2: Server
