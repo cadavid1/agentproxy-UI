@@ -14,7 +14,7 @@ Agent Proxy sits between human developers and AI coding agents, acting as an int
 
 ### Architecture
 
-![Architecture](docs/images/architecture.png)
+![Architecture](docs/images/architecture.jpg)
 
 The proxy maintains three types of context:
 - **Project Context**: Company mission, OKRs, competitive analysis, mockups
@@ -23,7 +23,7 @@ The proxy maintains three types of context:
 
 ### Execution Flow
 
-![Sequence](docs/images/sequence.png)
+![Sequence](docs/images/sequence.jpg)
 
 1. Human provides one-time project context setup
 2. Human assigns high-level tasks
