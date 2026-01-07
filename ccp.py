@@ -192,20 +192,56 @@ class GeminiClient:
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY not found")
     
-    def call(self, system_prompt: str, user_prompt: str) -> str:
-        """Make API call to Gemini."""
+    def call(self, system_prompt: str, user_prompt: str, image_paths: Optional[List[str]] = None) -> str:
+        """Make API call to Gemini with optional images.
+        
+        Args:
+            system_prompt: System instruction for the model.
+            user_prompt: User prompt/question.
+            image_paths: Optional list of image file paths to include.
+        """
         import urllib.request
         import urllib.error
+        import base64
         
         url = f"{self.API_URL}?key={self.api_key}"
         
+        # Build parts: text first, then images
+        parts = [
+            {"text": system_prompt},
+            {"text": user_prompt},
+        ]
+        
+        # Add images as inline_data
+        if image_paths:
+            for img_path in image_paths:
+                try:
+                    with open(img_path, "rb") as f:
+                        img_data = base64.b64encode(f.read()).decode("utf-8")
+                    
+                    # Determine MIME type from extension
+                    ext = img_path.lower().split(".")[-1]
+                    mime_map = {
+                        "png": "image/png",
+                        "jpg": "image/jpeg",
+                        "jpeg": "image/jpeg",
+                        "gif": "image/gif",
+                        "webp": "image/webp",
+                        "bmp": "image/bmp",
+                    }
+                    mime_type = mime_map.get(ext, "image/png")
+                    
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": img_data
+                        }
+                    })
+                except (IOError, OSError):
+                    pass  # Skip unreadable images
+        
         payload = {
-            "contents": [{
-                "parts": [
-                    {"text": system_prompt},
-                    {"text": user_prompt},
-                ]
-            }],
+            "contents": [{"parts": parts}],
             "generationConfig": {
                 "temperature": 0.7,
                 "maxOutputTokens": 2048,
@@ -891,10 +927,17 @@ You must output:
         best_practices = self._memory.best_practices.get_combined_context()
         
         # Project memory from Tier 2
+        screenshots_info = ""
+        if self._memory.session.reference_screenshots:
+            screenshots_info = "\nREFERENCE SCREENSHOTS (images attached below):\n" + "\n".join(
+                f"  - {ss.path}: {ss.description or 'UI reference'}"
+                for ss in self._memory.session.reference_screenshots
+            )
+        
         project_memory = f"""
 MISSION: {self._memory.session.user_mission or 'Not specified'}
 CURRENT TASK: {self._memory.session.user_prompt or 'Not specified'}
-FILES TRACKED: {', '.join(self._memory.session.project_files.keys()) or 'None'}
+FILES TRACKED: {', '.join(self._memory.session.project_files.keys()) or 'None'}{screenshots_info}
 """
         
         return AgentLoopInput(
@@ -1015,7 +1058,13 @@ Based on the above, provide your REASONING and FUNCTION_CALL in JSON format.
                 ),
             )
         else:
-            response = self._gemini.call(loop_input.system_instruction, user_prompt)
+            # Collect screenshot paths to send as images
+            image_paths = [
+                ss.path for ss in self._memory.session.reference_screenshots
+                if ss.path
+            ] if self._memory.session.reference_screenshots else None
+            
+            response = self._gemini.call(loop_input.system_instruction, user_prompt, image_paths)
             output = self._parse_agent_output(response)
         
         # Execute function
