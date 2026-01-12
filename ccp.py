@@ -900,6 +900,45 @@ You must output:
         
         return memory
     
+    def _load_project_memory_folder(self) -> Tuple[str, List[str]]:
+        """
+        Load all contents from the project_memory folder.
+        
+        This folder acts as a "data room" - all text content and images
+        are loaded every time CCP thinks and decides next step.
+        
+        Returns:
+            Tuple of (text_content, list_of_image_paths)
+        """
+        project_memory_dir = Path(self.working_dir) / "project_memory"
+        text_content = ""
+        image_paths: List[str] = []
+        
+        if not project_memory_dir.exists():
+            return text_content, image_paths
+        
+        # Supported image extensions
+        image_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+        
+        # Load all files from project_memory folder
+        for file_path in sorted(project_memory_dir.iterdir()):
+            if file_path.is_file():
+                ext = file_path.suffix.lower()
+                
+                if ext in image_extensions:
+                    # Collect image paths for visual context
+                    image_paths.append(str(file_path))
+                elif ext in {".txt", ".md", ".json", ".yaml", ".yml"}:
+                    # Load text file content
+                    try:
+                        content = file_path.read_text(encoding="utf-8")
+                        if content.strip():
+                            text_content += f"\n### {file_path.name}\n{content}\n"
+                    except (IOError, UnicodeDecodeError):
+                        pass
+        
+        return text_content, image_paths
+    
     def _build_functions_description(self) -> str:
         """Build description of available functions for the prompt."""
         lines = []
@@ -926,6 +965,9 @@ You must output:
         # Best practices from Tier 1
         best_practices = self._memory.best_practices.get_combined_context()
         
+        # Load project_memory folder (data room)
+        data_room_text, data_room_images = self._load_project_memory_folder()
+        
         # Project memory from Tier 2
         screenshots_info = ""
         if self._memory.session.reference_screenshots:
@@ -934,10 +976,19 @@ You must output:
                 for ss in self._memory.session.reference_screenshots
             )
         
+        # Include data room images in screenshots info
+        if data_room_images:
+            screenshots_info += "\nDATA ROOM IMAGES (from project_memory/):\n" + "\n".join(
+                f"  - {Path(img).name}" for img in data_room_images
+            )
+        
         project_memory = f"""
 MISSION: {self._memory.session.user_mission or 'Not specified'}
 CURRENT TASK: {self._memory.session.user_prompt or 'Not specified'}
 FILES TRACKED: {', '.join(self._memory.session.project_files.keys()) or 'None'}{screenshots_info}
+
+## DATA ROOM (project_memory/)
+{data_room_text if data_room_text else '(No text content loaded)'}
 """
         
         return AgentLoopInput(
@@ -1062,9 +1113,14 @@ Based on the above, provide your REASONING and FUNCTION_CALL in JSON format.
             image_paths = [
                 ss.path for ss in self._memory.session.reference_screenshots
                 if ss.path
-            ] if self._memory.session.reference_screenshots else None
+            ] if self._memory.session.reference_screenshots else []
             
-            response = self._gemini.call(loop_input.system_instruction, user_prompt, image_paths)
+            # Add data room images from project_memory folder
+            _, data_room_images = self._load_project_memory_folder()
+            if data_room_images:
+                image_paths = (image_paths or []) + data_room_images
+            
+            response = self._gemini.call(loop_input.system_instruction, user_prompt, image_paths or None)
             output = self._parse_agent_output(response)
         
         # Execute function

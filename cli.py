@@ -22,6 +22,8 @@ from ccp import CCP, list_sessions
 from models import EventType
 from pathlib import Path
 
+CONFIG_FILE = Path.home() / ".ccp_config"
+
 
 class CLI:
     """
@@ -44,6 +46,8 @@ Examples:
   %(prog)s --session abc123 "Continue the work"
   %(prog)s --list-sessions
   %(prog)s -d ./myproject "Fix the bug in app.py"
+  %(prog)s --set-workdir ./myproject   # Set default working directory
+  %(prog)s --show-workdir               # Show current default
             """
         )
         
@@ -73,6 +77,18 @@ Examples:
             "--list-sessions",
             action="store_true",
             help="List all available sessions"
+        )
+        
+        parser.add_argument(
+            "--set-workdir",
+            metavar="PATH",
+            help="Set default working directory (persists to ~/.ccp_config)"
+        )
+        
+        parser.add_argument(
+            "--show-workdir",
+            action="store_true",
+            help="Show current default working directory"
         )
         
         parser.add_argument(
@@ -114,6 +130,14 @@ Examples:
     def run(self) -> int:
         """Main entry point."""
         args = self.parse_args()
+        
+        # Handle --set-workdir (saves config, then continues if task provided)
+        if args.set_workdir:
+            self._set_workdir(args.set_workdir)
+        
+        # Handle --show-workdir
+        if args.show_workdir:
+            return self._show_workdir()
         
         # Handle --list-sessions
         if args.list_sessions:
@@ -158,13 +182,45 @@ Examples:
                 print(f"⚠ Unsupported image format: {path} (supported: {', '.join(SUPPORTED_EXTENSIONS)})", file=sys.stderr)
                 continue
             
-            # Use filename as description
-            description = p.stem.replace('_', ' ').replace('-', ' ')
-            ccp.memory.session.add_screenshot(str(p.absolute()), description)
-            print(f"📸 Attached: {path}")
+            # Use full filename so user can reference it in task
+            filename = p.name
+            ccp.memory.session.add_screenshot(str(p.absolute()), filename)
+            print(f"📸 Attached: {filename}")
             attached += 1
         
         return attached
+    
+    def _get_saved_workdir(self) -> Optional[str]:
+        """Get saved working directory from config."""
+        if CONFIG_FILE.exists():
+            try:
+                content = CONFIG_FILE.read_text().strip()
+                for line in content.split('\n'):
+                    if line.startswith('workdir='):
+                        return line.split('=', 1)[1]
+            except Exception:
+                pass
+        return None
+    
+    def _set_workdir(self, path: str) -> int:
+        """Set default working directory."""
+        abs_path = Path(path).resolve()
+        if not abs_path.exists():
+            abs_path.mkdir(parents=True, exist_ok=True)
+            print(f"Created directory: {abs_path}")
+        
+        CONFIG_FILE.write_text(f"workdir={abs_path}\n")
+        print(f"Default working directory set to: {abs_path}")
+        return 0
+    
+    def _show_workdir(self) -> int:
+        """Show current default working directory."""
+        saved = self._get_saved_workdir()
+        if saved:
+            print(f"Default working directory: {saved}")
+        else:
+            print("No default working directory set (using ./sandbox)")
+        return 0
     
     def _list_sessions(self) -> int:
         """List all available sessions."""
@@ -188,14 +244,21 @@ Examples:
     
     def _run_task(self, args: argparse.Namespace, task: str) -> int:
         """Execute a single task."""
+        # Use saved workdir if -d not explicitly provided
+        working_dir = args.working_dir
+        if working_dir == "./sandbox":  # default value, check for saved
+            saved = self._get_saved_workdir()
+            if saved:
+                working_dir = saved
+        
         # Create working directory if it doesn't exist
-        if not os.path.exists(args.working_dir):
-            os.makedirs(args.working_dir)
-            print(f"Created working directory: {args.working_dir}")
+        if not os.path.exists(working_dir):
+            os.makedirs(working_dir)
+            print(f"Created working directory: {working_dir}")
         
         try:
             self.ccp = CCP(
-                working_dir=args.working_dir,
+                working_dir=working_dir,
                 session_id=args.session,
                 user_mission=args.mission,
                 display_mode=args.display,
