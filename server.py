@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-CCP Web Server
+PA Web Server
 
-Exposes CCP functionality via HTTP API with Server-Sent Events (SSE) for streaming.
+Exposes PA functionality via HTTP API with Server-Sent Events (SSE) for streaming.
 
 Endpoints:
     POST /task          - Start a new task (returns SSE stream)
@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ccp import CCP, create_ccp, list_sessions, OutputEvent, EventType
+from pa import PA, create_pa, list_sessions, OutputEvent, EventType
 
 
 # =============================================================================
@@ -37,8 +37,8 @@ from ccp import CCP, create_ccp, list_sessions, OutputEvent, EventType
 # =============================================================================
 
 app = FastAPI(
-    title="CCP Server",
-    description="Code Custodian Persona - AI supervisor for Claude Code",
+    title="PA Server",
+    description="Proxy Agent - AI supervisor for Claude Code",
     version="1.0.0",
 )
 
@@ -89,8 +89,8 @@ class StopRequest(BaseModel):
 # Global State
 # =============================================================================
 
-# Track active CCP instances by session
-active_sessions: dict[str, CCP] = {}
+# Track active PA instances by session
+active_sessions: dict[str, PA] = {}
 
 
 # =============================================================================
@@ -118,20 +118,20 @@ async def stream_task(
     """
     Stream task execution as SSE events.
     
-    Runs CCP in a background thread and yields events as they arrive.
+    Runs PA in a background thread and yields events as they arrive.
     """
     # Create event queue for thread communication
     event_queue: Queue = Queue()
     
-    def run_ccp():
-        """Run CCP in background thread."""
+    def run_pa():
+        """Run PA in background thread."""
         try:
             # Create working directory if needed
             if not os.path.exists(working_dir):
                 os.makedirs(working_dir)
             
-            # Create CCP instance
-            ccp = create_ccp(
+            # Create PA instance
+            pa = create_pa(
                 working_dir=working_dir,
                 session_id=session_id,
                 user_mission=mission,
@@ -141,7 +141,7 @@ async def stream_task(
             if screenshots:
                 for ss in screenshots:
                     desc = ss.description or ss.path.split("/")[-1].replace("_", " ").replace("-", " ")
-                    ccp.memory.session.add_screenshot(ss.path, desc)
+                    pa.memory.session.add_screenshot(ss.path, desc)
                     event_queue.put(OutputEvent(
                         event_type=EventType.TEXT,
                         content=f"📸 Attached screenshot: {ss.path}",
@@ -149,25 +149,25 @@ async def stream_task(
                     ))
             
             # Track active session
-            active_sessions[ccp.session_id] = ccp
+            active_sessions[pa.session_id] = pa
             
             # Send session info as first event
             event_queue.put(OutputEvent(
                 event_type=EventType.TEXT,
-                content=f"Session: {ccp.session_id}",
-                metadata={"session_id": ccp.session_id},
+                content=f"Session: {pa.session_id}",
+                metadata={"session_id": pa.session_id},
             ))
             
             # Run task and queue events
-            for event in ccp.run_task(task, max_iterations=max_iterations):
+            for event in pa.run_task(task, max_iterations=max_iterations):
                 event_queue.put(event)
             
             # Signal completion
             event_queue.put(None)
             
             # Cleanup
-            if ccp.session_id in active_sessions:
-                del active_sessions[ccp.session_id]
+            if pa.session_id in active_sessions:
+                del active_sessions[pa.session_id]
                 
         except Exception as e:
             event_queue.put(OutputEvent(
@@ -177,8 +177,8 @@ async def stream_task(
             ))
             event_queue.put(None)
     
-    # Start CCP in background thread
-    thread = Thread(target=run_ccp, daemon=True)
+    # Start PA in background thread
+    thread = Thread(target=run_pa, daemon=True)
     thread.start()
     
     # Yield events as they arrive
@@ -258,9 +258,9 @@ async def stop_task(request: StopRequest):
     session_id = request.session_id
     
     # Find matching session
-    for sid, ccp in active_sessions.items():
+    for sid, pa in active_sessions.items():
         if sid.startswith(session_id):
-            ccp.stop()
+            pa.stop()
             return {"status": "stopped", "session_id": sid}
     
     raise HTTPException(status_code=404, detail="Active session not found")
@@ -281,7 +281,7 @@ async def health_check():
 
 def main():
     """Run the server."""
-    parser = argparse.ArgumentParser(description="CCP Web Server")
+    parser = argparse.ArgumentParser(description="PA Web Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")

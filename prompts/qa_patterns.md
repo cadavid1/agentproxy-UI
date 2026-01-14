@@ -1,4 +1,4 @@
-# CCP QA Patterns
+# PA QA Patterns
 
 Patterns for generating QA review prompts.
 

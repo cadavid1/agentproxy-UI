@@ -48,14 +48,14 @@ python cli.py --add-screenshot design.png "Match this UI"
 
 ```bash
 # Add alias to ~/.zshrc or ~/.bashrc
-alias ccp='python /Users/ethw/Desktop/GIT-Aertoria/agentproxy/cli.py'
+alias pa='python /Users/ethw/Desktop/GIT-Aertoria/agentproxy/cli.py'
 
-# Set working directory with task (saves to ~/.ccp_config for future tasks)
-ccp --set-workdir ./myproject "Fix bug"
-ccp --show-workdir  # View current default
+# Set working directory with task (saves to ~/.pa_config for future tasks)
+pa --set-workdir ./myproject "Fix bug"
+pa --show-workdir  # View current default
 
 # Example with screenshot
-ccp --add-screenshot design.png "Build a web app matching this UI"
+pa --add-screenshot design.png "Build a web app matching this UI"
 ```
 
 ## Mode 2: Server

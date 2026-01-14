@@ -1,11 +1,11 @@
 """
-Interactive Labs - CCP (Code Custodian Persona)
+Interactive Labs - PA (Proxy Agent)
 ===============================================
 
 Unified AI agent that supervises Claude Code with:
-- CCP-Thinking: Reasoning about Claude's actions
-- CCP-QA: Generating and running tests
-- CCP-Verify: Executing and validating code
+- PA-Thinking: Reasoning about Claude's actions
+- PA-QA: Generating and running tests
+- PA-Verify: Executing and validating code
 
 Three-tier memory system:
 1. Best Practices: Static rules from prompts/*.md
@@ -13,26 +13,26 @@ Three-tier memory system:
 3. Interaction History: Rolling window of Claude interactions
 
 Usage:
-    from interactive_labs import CCP
+    from interactive_labs import PA
     
-    ccp = CCP(working_dir=".", user_mission="Build a REST API")
-    for event in ccp.run_task("Create user endpoints"):
+    pa = PA(working_dir=".", user_mission="Build a REST API")
+    for event in pa.run_task("Create user endpoints"):
         print(event)
 """
 
 from models import OutputEvent, EventType, ControllerState
-from ccp import CCP, create_ccp, list_sessions
-from ccp_memory import CCPMemory, BestPractices, SessionContext, InteractionHistory
+from pa import PA, create_pa, list_sessions
+from pa_memory import PAMemory, BestPractices, SessionContext, InteractionHistory
 from process_manager import ClaudeProcessManager
 from display import RealtimeDisplay
 
 __all__ = [
     # Primary API
-    "CCP",
-    "create_ccp",
+    "PA",
+    "create_pa",
     "list_sessions",
     # Memory system
-    "CCPMemory",
+    "PAMemory",
     "BestPractices",
     "SessionContext",
     "InteractionHistory",

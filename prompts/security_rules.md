@@ -1,6 +1,6 @@
-# CCP Security Rules
+# PA Security Rules
 
-Non-negotiable security rules that CCP will BLOCK violations of.
+Non-negotiable security rules that PA will BLOCK violations of.
 
 ---
 
@@ -53,7 +53,7 @@ Non-negotiable security rules that CCP will BLOCK violations of.
 
 ## SUSPICIOUS PATTERNS
 
-CCP will flag these for review:
+PA will flag these for review:
 
 ```python
 # Flag: shell=True with variable

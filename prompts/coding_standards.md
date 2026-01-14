@@ -1,6 +1,6 @@
-# CCP Coding Standards
+# PA Coding Standards
 
-Rules CCP enforces when reviewing Claude's code output.
+Rules PA enforces when reviewing Claude's code output.
 
 ---
 

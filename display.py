@@ -62,15 +62,15 @@ class RealtimeDisplay:
     Renders events with clear visual distinction between sources.
     
     Sources (color-coded prefixes):
-        CCP     (CYAN)     │ CCP    │  CCP agent (orchestration, thinking, QA)
+        PA      (CYAN)     │ PA     │  PA agent (orchestration, thinking, QA)
         Claude  (MAGENTA)  ┃ Claude ┃  Claude Code subprocess (execution)
     """
     
-    # Source-to-prefix mapping - CCP, CCP-thinking, CCP-NextStep, and Claude
+    # Source-to-prefix mapping - PA, PA-thinking, PA-NextStep, and Claude
     SOURCE_PREFIXES = {
-        "ccp":         (Colors.CYAN,    "│ CCP         │"),
-        "thinking":    (Colors.BLUE,    "│ CCP-thinking│"),
-        "nextstep":    (Colors.BRIGHT_YELLOW + Colors.BOLD, "│ CCP-nextstep│"),
+        "pa":          (Colors.CYAN,    "│ PA          │"),
+        "pa-thinking": (Colors.BLUE,    "│ PA-thinking │"),
+        "pa-nextstep": (Colors.BRIGHT_YELLOW + Colors.BOLD, "│ PA-nextstep │"),
         "claude":      (Colors.MAGENTA, "┃ Claude      ┃"),
     }
     
@@ -193,9 +193,9 @@ class RealtimeDisplay:
             self._write(f"{Colors.DIM}  {subtitle}{Colors.RESET}")
         self._write(f"{Colors.CYAN}{Colors.BOLD}{line}{Colors.RESET}")
         self._write("")
-        self._write(f"{Colors.CYAN}│ CCP         │{Colors.RESET} = CCP orchestration")
-        self._write(f"{Colors.BLUE}│ CCP-thinking│{Colors.RESET} = CCP reasoning about Claude's output")
-        self._write(f"{Colors.BRIGHT_YELLOW}{Colors.BOLD}│ CCP-nextstep│{Colors.RESET} = CCP decision after Claude exits")
+        self._write(f"{Colors.CYAN}│ PA          │{Colors.RESET} = PA orchestration")
+        self._write(f"{Colors.BLUE}│ PA-thinking │{Colors.RESET} = PA reasoning about Claude's output")
+        self._write(f"{Colors.BRIGHT_YELLOW}{Colors.BOLD}│ PA-nextstep │{Colors.RESET} = PA decision after Claude exits")
         self._write(f"{Colors.MAGENTA}┃ Claude      ┃{Colors.RESET} = Claude Code subprocess")
         self._write("")
     
@@ -294,7 +294,7 @@ class RealtimeDisplay:
     # Private Methods
     # =========================================================================
     
-    # Action tag colors for CCP thinking output
+    # Action tag colors for PA thinking output
     ACTION_COLORS = {
         "CONTINUE": Colors.YELLOW,
         "VERIFY": Colors.BRIGHT_CYAN,
@@ -328,8 +328,8 @@ class RealtimeDisplay:
         )
         proc_prefix = f"{source_color}{source_label}{Colors.RESET} "
         
-        # CCP-nextstep: entire content is yellow bold (high visibility)
-        if source == "nextstep":
+        # PA-nextstep: entire content is yellow bold (high visibility)
+        if source == "pa-nextstep":
             color = Colors.BRIGHT_YELLOW + Colors.BOLD
         
         # Build output line
@@ -340,7 +340,7 @@ class RealtimeDisplay:
             parts.append(f"{Colors.DIM}[{ts}]{Colors.RESET} ")
         
         # Colorize action tags in content (skip for nextstep - already fully colored)
-        if source == "nextstep":
+        if source == "pa-nextstep":
             content = event.content
         else:
             content = self._colorize_action_tags(event.content)

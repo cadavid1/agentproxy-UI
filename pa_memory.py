@@ -1,8 +1,8 @@
 """
-CCP Memory System
+PA Memory System
 =================
 
-Three-tier memory system for the Code Custodian Persona:
+Three-tier memory system for the Proxy Agent:
 
 1. Best Practices (Tier 1) - Static rules from prompts/*.md
 2. Session Context (Tier 2) - High-level mission, persists hours/days
@@ -26,7 +26,7 @@ class BestPractices:
     """
     Tier 1: Static rules loaded from prompts/*.md files.
     
-    These define CCP's persona, coding standards, and review criteria.
+    These define PA's persona, coding standards, and review criteria.
     Loaded once at startup, rarely changes during runtime.
     """
     system_prompt: str = ""
@@ -34,6 +34,7 @@ class BestPractices:
     review_checklist: str = ""
     security_rules: str = ""
     qa_patterns: str = ""
+    python_best_practices: str = ""
     
     @classmethod
     def load(cls, prompts_dir: Path) -> "BestPractices":
@@ -41,11 +42,12 @@ class BestPractices:
         Load all .md files from prompts directory.
         
         Expected files:
-            - ccp_system_prompt.md (required)
+            - pa_system_prompt.md (required)
             - coding_standards.md (optional)
             - review_checklist.md (optional)
             - security_rules.md (optional)
             - qa_patterns.md (optional)
+            - python_best_practices.md (optional)
         """
         prompts_dir = Path(prompts_dir)
         
@@ -56,11 +58,12 @@ class BestPractices:
             return ""
         
         return cls(
-            system_prompt=read_file("ccp_system_prompt.md"),
+            system_prompt=read_file("pa_system_prompt.md"),
             coding_standards=read_file("coding_standards.md"),
             review_checklist=read_file("review_checklist.md"),
             security_rules=read_file("security_rules.md"),
             qa_patterns=read_file("qa_patterns.md"),
+            python_best_practices=read_file("python_best_practices.md"),
         )
     
     def get_combined_context(self) -> str:
@@ -69,6 +72,8 @@ class BestPractices:
         
         if self.coding_standards:
             parts.append(f"\n## CODING STANDARDS\n{self.coding_standards}")
+        if self.python_best_practices:
+            parts.append(f"\n## PYTHON BEST PRACTICES\n{self.python_best_practices}")
         if self.security_rules:
             parts.append(f"\n## SECURITY RULES\n{self.security_rules}")
         
@@ -101,7 +106,7 @@ class Task:
     """A task broken down from the main user request."""
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     description: str = ""
-    assignee: str = "claude"  # claude, ccp, human
+    assignee: str = "claude"  # claude, pa, human
     status: str = "pending"  # pending, in_progress, blocked, completed, cancelled
     priority: int = 0  # 0 = highest priority
     parent_id: Optional[str] = None  # For subtasks
@@ -141,7 +146,7 @@ class SessionContext:
     """
     Tier 2: High-level context persisting across hours/days.
     
-    This is the "big picture" memory that keeps CCP focused on:
+    This is the "big picture" memory that keeps PA focused on:
     - What the user ultimately wants to achieve
     - Constraints and requirements
     - Acceptance criteria for completion
@@ -353,7 +358,7 @@ class SessionContext:
 @dataclass
 class InteractionEvent:
     """A single interaction event."""
-    event_type: str  # claude_output, ccp_decision, verification, qa_review
+    event_type: str  # claude_output, pa_decision, verification, qa_review
     content: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -363,8 +368,8 @@ class InteractionEvent:
 
 
 @dataclass
-class CCPDecision:
-    """A CCP thinking decision."""
+class PADecision:
+    """A PA thinking decision."""
     action: str  # CONTINUE, VERIFY, DONE
     reasoning: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -377,13 +382,13 @@ class InteractionHistory:
     
     This provides immediate context about:
     - What Claude recently did
-    - What CCP decided and why
+    - What PA decided and why
     - Recent verification results
     - QA review outcomes
     """
     max_events: int = 100
     events: List[InteractionEvent] = field(default_factory=list)
-    ccp_decisions: List[CCPDecision] = field(default_factory=list)
+    pa_decisions: List[PADecision] = field(default_factory=list)
     files_created: List[str] = field(default_factory=list)
     verification_results: List[Dict[str, Any]] = field(default_factory=list)
     qa_reviews: List[Dict[str, Any]] = field(default_factory=list)
@@ -398,8 +403,8 @@ class InteractionHistory:
         self._trim()
     
     def add_decision(self, action: str, reasoning: str) -> None:
-        """Record a CCP decision."""
-        self.ccp_decisions.append(CCPDecision(action=action, reasoning=reasoning))
+        """Record a PA decision."""
+        self.pa_decisions.append(PADecision(action=action, reasoning=reasoning))
         self._trim()
     
     def track_file(self, filepath: str) -> None:
@@ -430,8 +435,8 @@ class InteractionHistory:
         """Trim to max_events."""
         if len(self.events) > self.max_events:
             self.events = self.events[-self.max_events:]
-        if len(self.ccp_decisions) > self.max_events:
-            self.ccp_decisions = self.ccp_decisions[-self.max_events:]
+        if len(self.pa_decisions) > self.max_events:
+            self.pa_decisions = self.pa_decisions[-self.max_events:]
     
     def get_recent_claude_outputs(self, n: int = 10) -> List[str]:
         """Get last N Claude responses."""
@@ -441,9 +446,9 @@ class InteractionHistory:
         ]
         return [e.content for e in claude_events[-n:]]
     
-    def get_recent_decisions(self, n: int = 5) -> List[CCPDecision]:
-        """Get last N CCP decisions."""
-        return self.ccp_decisions[-n:]
+    def get_recent_decisions(self, n: int = 5) -> List[PADecision]:
+        """Get last N PA decisions."""
+        return self.pa_decisions[-n:]
     
     def get_history_for_llm(self, max_chars: int = 2000) -> List[Dict]:
         """Get history formatted for LLM context."""
@@ -468,7 +473,7 @@ class InteractionHistory:
     def clear(self) -> None:
         """Clear all history."""
         self.events.clear()
-        self.ccp_decisions.clear()
+        self.pa_decisions.clear()
         self.files_created.clear()
         self.verification_results.clear()
         self.qa_reviews.clear()
@@ -478,12 +483,12 @@ class InteractionHistory:
 # Unified Memory Manager
 # =============================================================================
 
-class CCPMemory:
+class PAMemory:
     """
-    Unified three-tier memory system for CCP.
+    Unified three-tier memory system for PA.
     
     Usage:
-        memory = CCPMemory(working_dir="./myproject")
+        memory = PAMemory(working_dir="./myproject")
         memory.session.set_mission("Build a REST API")
         memory.history.add_event("claude_output", "Created app.py")
     """
@@ -534,7 +539,7 @@ class CCPMemory:
         
         # Tier 1
         if self.best_practices.system_prompt:
-            parts.append("=== CCP PERSONA ===")
+            parts.append("=== PA PERSONA ===")
             parts.append(self.best_practices.system_prompt[:1000])
         
         # Tier 2

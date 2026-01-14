@@ -1,6 +1,6 @@
-# CCP Review Checklist
+# PA Review Checklist
 
-Checklist CCP runs through when reviewing Claude's code.
+Checklist PA runs through when reviewing Claude's code.
 
 ---
 
