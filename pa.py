@@ -100,6 +100,9 @@ class PA:
             
             yield self._emit(f"[Iteration {iteration + 1}] Executing Claude...", EventType.TEXT)
             
+            # Show what PA is sending to Claude BEFORE execution (full text)
+            yield self._emit(current_instruction, EventType.TEXT, source="pa-to-claude")
+            
             claude_output_lines = []
             for event in self._stream_claude(current_instruction):
                 yield event
@@ -136,9 +139,6 @@ class PA:
             
             next_instruction = self.agent.get_claude_instruction()
             current_instruction = next_instruction if next_instruction else self._synthesize_instruction(result)
-            
-            # Clearly show what PA is sending to Claude
-            yield self._emit(current_instruction[:500], EventType.TEXT, source="pa-to-claude")
         
         all_files = list(set(self._session_files_changed))
         summary = self.agent.generate_session_summary(task, self._claude_output_buffer, all_files)

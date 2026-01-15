@@ -7,6 +7,7 @@ Each function runs independently and returns a structured result.
 """
 
 import glob
+import json
 import os
 import subprocess
 import time
@@ -19,6 +20,136 @@ from queue import Queue, Empty
 from typing import Any, Callable, Dict, List, Optional
 
 from gemini_client import GeminiClient
+
+
+# =============================================================================
+# Browser Verification Helper
+# =============================================================================
+
+class BrowserVerifier:
+    """Uses Playwright to verify web applications visually."""
+    
+    @staticmethod
+    def verify_url(url: str, screenshot_path: Optional[str] = None, checks: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Navigate to URL, take screenshot, and verify page loads.
+        
+        Args:
+            url: URL to verify
+            screenshot_path: Path to save screenshot (optional)
+            checks: List of elements/text to verify on page (optional)
+        
+        Returns:
+            Dict with success status, screenshot path, and any errors
+        """
+        result = {"success": False, "url": url, "errors": [], "checks": []}
+        
+        # Playwright script to run
+        script = f'''
+const {{ chromium }} = require('playwright');
+
+(async () => {{
+    const browser = await chromium.launch({{ headless: true }});
+    const page = await browser.newPage();
+    const result = {{ success: false, title: '', errors: [], checks: [] }};
+    
+    try {{
+        const response = await page.goto('{url}', {{ timeout: 10000, waitUntil: 'networkidle' }});
+        result.status = response ? response.status() : 0;
+        result.title = await page.title();
+        result.success = result.status >= 200 && result.status < 400;
+        
+        // Take screenshot if path provided
+        {'await page.screenshot({ path: "' + screenshot_path + '", fullPage: true });' if screenshot_path else ''}
+        
+        // Check for specific elements/text
+        const checks = {json.dumps(checks or [])};
+        for (const check of checks) {{
+            try {{
+                const found = await page.locator(`text=${{check}}`).count() > 0 
+                           || await page.locator(check).count() > 0;
+                result.checks.push({{ item: check, found: found }});
+            }} catch (e) {{
+                result.checks.push({{ item: check, found: false, error: e.message }});
+            }}
+        }}
+        
+        // Get page content summary
+        result.content = await page.evaluate(() => {{
+            return document.body ? document.body.innerText.substring(0, 500) : '';
+        }});
+        
+    }} catch (e) {{
+        result.errors.push(e.message);
+    }} finally {{
+        await browser.close();
+    }}
+    
+    console.log(JSON.stringify(result));
+}})();
+'''
+        
+        try:
+            proc = subprocess.run(
+                ["node", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=os.getcwd()
+            )
+            
+            if proc.returncode == 0 and proc.stdout.strip():
+                output = json.loads(proc.stdout.strip().split('\n')[-1])
+                result.update(output)
+            else:
+                result["errors"].append(proc.stderr[:200] if proc.stderr else "Unknown error")
+                
+        except subprocess.TimeoutExpired:
+            result["errors"].append("Browser verification timed out")
+        except json.JSONDecodeError as e:
+            result["errors"].append(f"Failed to parse browser output: {e}")
+        except FileNotFoundError:
+            result["errors"].append("Node.js or Playwright not installed")
+        except Exception as e:
+            result["errors"].append(str(e)[:100])
+        
+        return result
+    
+    @staticmethod
+    def take_snapshot(url: str) -> Dict[str, Any]:
+        """Take accessibility snapshot of page for verification."""
+        script = f'''
+const {{ chromium }} = require('playwright');
+
+(async () => {{
+    const browser = await chromium.launch({{ headless: true }});
+    const page = await browser.newPage();
+    
+    try {{
+        await page.goto('{url}', {{ timeout: 10000, waitUntil: 'domcontentloaded' }});
+        const snapshot = await page.accessibility.snapshot();
+        console.log(JSON.stringify({{ success: true, snapshot: snapshot }}));
+    }} catch (e) {{
+        console.log(JSON.stringify({{ success: false, error: e.message }}));
+    }} finally {{
+        await browser.close();
+    }}
+}})();
+'''
+        
+        try:
+            proc = subprocess.run(
+                ["node", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return json.loads(proc.stdout.strip().split('\n')[-1])
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        
+        return {"success": False, "error": "Unknown error"}
 
 
 # =============================================================================
@@ -898,7 +1029,7 @@ Format:
         port: int,
         ui_actions: List[str]
     ) -> FunctionResult:
-        """Start UI app and provide verification instructions."""
+        """Start UI app and verify with browser automation."""
         server_process = None
         results = []
         
@@ -915,19 +1046,45 @@ Format:
                 results.append(f"[PA Verify] Started UI server: {start_command}")
             
             base_url = f"http://localhost:{port}"
-            results.append(f"[PA Verify] UI app running at {base_url}")
-            results.append("[PA Verify] Use Playwright MCP tools to verify UI")
+            results.append(f"[PA Verify] Testing UI at {base_url}")
             
-            if ui_actions:
-                results.append("\n[PA Verify] Requested UI actions:")
-                for action in ui_actions:
-                    results.append(f"  - {action}")
+            # Actually verify with browser
+            screenshot_dir = Path(self.working_dir) / "project_memory"
+            screenshot_dir.mkdir(exist_ok=True)
+            screenshot_path = str(screenshot_dir / f"verify_{int(time.time())}.png")
+            
+            browser_result = BrowserVerifier.verify_url(
+                url=base_url,
+                screenshot_path=screenshot_path,
+                checks=ui_actions or None
+            )
+            
+            if browser_result.get("success"):
+                results.append(f"[PA Verify] ✓ Page loaded: {browser_result.get('title', 'No title')}")
+                results.append(f"[PA Verify] ✓ Status: {browser_result.get('status', '?')}")
+                results.append(f"[PA Verify] ✓ Screenshot saved: {screenshot_path}")
+                
+                # Report check results
+                for check in browser_result.get("checks", []):
+                    status = "✓" if check.get("found") else "✗"
+                    results.append(f"[PA Verify] {status} Check '{check.get('item')}': {'Found' if check.get('found') else 'Not found'}")
+                
+                # Show content preview
+                content = browser_result.get("content", "")[:200]
+                if content:
+                    results.append(f"[PA Verify] Content preview: {content}...")
+                
+                overall_success = True
+            else:
+                errors = browser_result.get("errors", ["Unknown error"])
+                results.append(f"[PA Verify] ✗ Browser verification failed: {errors}")
+                overall_success = False
             
             return FunctionResult(
                 name=FunctionName.VERIFY_PRODUCT,
-                success=True,
+                success=overall_success,
                 output="\n".join(results),
-                metadata={"type": "ui_app", "url": base_url}
+                metadata={"type": "ui_app", "url": base_url, "screenshot": screenshot_path, "browser_result": browser_result}
             )
             
         except Exception as e:

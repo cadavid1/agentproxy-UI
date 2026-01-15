@@ -456,13 +456,15 @@ Examples:
                 
                 # Display each event in real-time
                 source = event.metadata.get("source", "pa") if event.metadata else "pa"
-                is_claude = source == "claude"
                 
                 # Colored prefix based on source
-                if is_claude:
-                    prefix = "\033[35m┃ Claude ┃\033[0m"  # Magenta for Claude
-                else:
-                    prefix = "\033[36m│ PA     │\033[0m"  # Cyan for PA
+                SOURCE_PREFIXES = {
+                    "claude":      "\033[35m┃ Claude      ┃\033[0m",  # Magenta
+                    "pa":          "\033[36m│ PA          │\033[0m",  # Cyan
+                    "pa-thinking": "\033[34m│ 💭 THINKING │\033[0m",  # Blue
+                    "pa-to-claude": "\033[32m\033[1m│ PA → Claude │\033[0m",  # Green bold
+                }
+                prefix = SOURCE_PREFIXES.get(source, SOURCE_PREFIXES["pa"])
                 
                 # Color content based on event type
                 if event.event_type == EventType.ERROR:

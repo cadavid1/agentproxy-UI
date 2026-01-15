@@ -71,7 +71,7 @@ class RealtimeDisplay:
         "pa":          (Colors.CYAN,    "│ PA          │"),
         "pa-thinking": (Colors.BLUE,    "│ 💭 THINKING │"),
         "pa-nextstep": (Colors.BRIGHT_YELLOW + Colors.BOLD, "│ PA-nextstep │"),
-        "pa-to-claude": (Colors.GREEN + Colors.BOLD, "│ ➜ TO CLAUDE │"),
+        "pa-to-claude": (Colors.GREEN + Colors.BOLD, "│ PA → Claude │"),
         "claude":      (Colors.MAGENTA, "┃ Claude      ┃"),
     }
     
