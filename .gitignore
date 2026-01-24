@@ -32,3 +32,14 @@ sessions/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Build artifacts
+*.egg-info/
+build/
+dist/
+
+# Vim undo files
+*.un~
+
+# Sandbox directories
+sandbox/
