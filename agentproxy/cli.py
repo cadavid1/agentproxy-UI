@@ -18,8 +18,8 @@ import signal
 import os
 from typing import Optional
 
-from pa import PA, list_sessions
-from models import EventType
+from .pa import PA, list_sessions
+from .models import EventType
 from pathlib import Path
 
 CONFIG_FILE = Path.home() / ".pa_config"
@@ -122,7 +122,13 @@ Examples:
             action="store_true",
             help="Disable auto-QA review after task completion"
         )
-        
+
+        parser.add_argument(
+            "--claude-bin",
+            metavar="PATH",
+            help="Path to claude binary (default: 'claude' from PATH)"
+        )
+
         parser.add_argument(
             "--screenshot",
             nargs=2,
@@ -425,6 +431,7 @@ Examples:
                 auto_verify=not args.no_verify,
                 auto_qa=not args.no_qa,
                 context_dir=context_dir,
+                claude_bin=args.claude_bin,
             )
             
             # Attach screenshots if provided (--screenshot with description)

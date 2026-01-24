@@ -29,7 +29,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from pa import PA, create_pa, list_sessions, OutputEvent, EventType
+from .pa import PA, create_pa, list_sessions, OutputEvent, EventType
+from .telemetry import get_telemetry
 
 
 # =============================================================================
@@ -50,6 +51,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Auto-instrument FastAPI if telemetry enabled
+telemetry = get_telemetry()
+telemetry.instrument_fastapi(app)
 
 
 # =============================================================================
@@ -289,7 +294,7 @@ def main():
     
     import uvicorn
     uvicorn.run(
-        "server:app",
+        "agentproxy.server:app",
         host=args.host,
         port=args.port,
         reload=args.reload,

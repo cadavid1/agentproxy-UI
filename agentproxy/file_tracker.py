@@ -8,7 +8,7 @@ Parses Claude's streaming JSON output to detect file operations.
 
 from typing import Any, Dict, List
 
-from gemini_client import GeminiClient
+from .gemini_client import GeminiClient
 
 
 class FileChangeTracker:

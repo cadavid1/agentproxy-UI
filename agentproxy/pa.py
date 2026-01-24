@@ -11,16 +11,18 @@ After each Claude iteration, PA thinks holistically and decides:
 
 import json
 import subprocess
+import time
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from display import create_display
-from file_tracker import FileChangeTracker
-from function_executor import FunctionName, FunctionResult
-from models import ControllerState, EventType, OutputEvent
-from pa_agent import PAAgent
-from pa_memory import PAMemory
+from .display import create_display
+from .file_tracker import FileChangeTracker
+from .function_executor import FunctionName, FunctionResult
+from .models import ControllerState, EventType, OutputEvent
+from .pa_agent import PAAgent
+from .pa_memory import PAMemory
+from .telemetry import get_telemetry
 
 
 class PADecision(str, Enum):
@@ -43,10 +45,12 @@ class PA:
         auto_verify: bool = True,
         auto_qa: bool = True,
         context_dir: Optional[str] = None,
+        claude_bin: Optional[str] = None,
     ) -> None:
         self.working_dir = working_dir
         self.auto_verify = auto_verify
         self.auto_qa = auto_qa
+        self.claude_bin = claude_bin or "claude"
         
         self.agent = PAAgent(working_dir, session_id, user_mission, context_dir)
         self._display = create_display(display_mode)
@@ -70,92 +74,155 @@ class PA:
     
     def run_task(self, task: str, max_iterations: int = 100) -> Generator[OutputEvent, None, None]:
         """Execute a task with PA supervising Claude."""
-        self._state = ControllerState.PROCESSING
-        self._session_files_changed = []
-        
-        # Self-check before starting
-        is_ready, status = self.agent.self_check()
-        yield self._emit(f"[PA Self-Check]\n{status}", EventType.TEXT, source="pa")
-        if not is_ready:
-            yield self._emit("[PA] Self-check failed - cannot proceed", EventType.ERROR, source="pa")
-            self._state = ControllerState.IDLE
-            return
-        
-        yield self._emit("Starting task...", EventType.STARTED)
-        yield from self._setup_task_breakdown(task)
-        
-        if self._previous_summary:
-            yield self._emit(f"[PA] Resuming session", EventType.THINKING, source="pa-thinking")
-        
-        current_instruction = task
-        iteration = 0
-        
-        for iteration in range(max_iterations):
-            if self.agent.is_done:
-                break
-            
-            if iteration > 0 and iteration % 3 == 0:
-                progress = self.agent.review_task_progress()
-                yield self._emit(f"[PA Tasks] {progress}", EventType.THINKING, source="pa-thinking")
-            
-            yield self._emit(f"[Iteration {iteration + 1}] Executing Claude...", EventType.TEXT)
-            
-            # Show what PA is sending to Claude BEFORE execution (full text)
-            yield self._emit(current_instruction, EventType.TEXT, source="pa-to-claude")
-            
-            claude_output_lines = []
-            for event in self._stream_claude(current_instruction):
-                yield event
-                if event.content:
-                    claude_output_lines.append(event.content)
-            
-            claude_output = "\n".join(claude_output_lines)
-            self._claude_output_buffer.append(claude_output)
-            
-            changed_files = self._file_tracker.get_changed_files()
-            if changed_files:
-                self._session_files_changed.extend(changed_files)
-            
-            task_update = self.agent.smart_update_task_status(claude_output)
-            if task_update:
-                yield self._emit(f"[PA Tasks] {task_update}", EventType.THINKING, source="pa-thinking")
-            
-            # ALWAYS verify after Claude finishes before moving on
-            yield self._emit("[PA] Verifying Claude's work...", EventType.TEXT, source="pa")
-            yield from self._run_auto_verification(task, changed_files or [])
-            
-            # Detect if Claude is confused/asking for task
-            if self._claude_is_confused(claude_output):
-                yield self._emit("[PA] Claude lost context - re-sending original task", EventType.THINKING, source="pa-thinking")
-                current_instruction = task
-                continue
-            
-            reasoning, result = self.agent.run_iteration(claude_output)
-            
-            # Show PA's thinking process
-            thinking_output = f"State: {reasoning.current_state}\nProgress: {reasoning.claude_progress}\nDecision: {reasoning.decision}"
-            yield self._emit(thinking_output, EventType.THINKING, source="pa-thinking")
-            yield self._emit(f"[{result.name.value}] {result.output[:300]}", EventType.TOOL_RESULT, source="pa")
-            
-            next_instruction = self.agent.get_claude_instruction()
-            current_instruction = next_instruction if next_instruction else self._synthesize_instruction(result)
-        
-        all_files = list(set(self._session_files_changed))
-        summary = self.agent.generate_session_summary(task, self._claude_output_buffer, all_files)
-        self.agent.save_session_summary(summary)
-        
-        if self.agent.is_done:
-            yield self._emit("Task completed", EventType.COMPLETED)
+        telemetry = get_telemetry()
+
+        # Start OTEL span if enabled
+        if telemetry.enabled and telemetry.tracer:
+            span = telemetry.tracer.start_span(
+                "pa.run_task",
+                attributes={
+                    "pa.task.description": task[:100],  # Truncate for readability
+                    "pa.working_dir": self.working_dir,
+                    "pa.max_iterations": max_iterations,
+                }
+            )
+            telemetry.tasks_started.add(1)
+            telemetry.active_sessions.add(1)
+            task_start_time = time.time()
         else:
-            yield self._emit("Max iterations reached", EventType.ERROR)
+            span = None
+
+        try:
+            self._state = ControllerState.PROCESSING
+            self._session_files_changed = []
+
+            # Self-check before starting
+            is_ready, status = self.agent.self_check()
+            yield self._emit(f"[PA Self-Check]\n{status}", EventType.TEXT, source="pa")
+            if not is_ready:
+                yield self._emit("[PA] Self-check failed - cannot proceed", EventType.ERROR, source="pa")
+                self._state = ControllerState.IDLE
+                if span:
+                    span.set_attribute("pa.status", "failed_self_check")
+                    span.end()
+                    telemetry.active_sessions.add(-1)
+                return
+
+            yield self._emit("Starting task...", EventType.STARTED)
+            yield from self._setup_task_breakdown(task)
+
+            if self._previous_summary:
+                yield self._emit(f"[PA] Resuming session", EventType.THINKING, source="pa-thinking")
+
+            current_instruction = task
+            iteration = 0
+
+            for iteration in range(max_iterations):
+                if self.agent.is_done:
+                    break
+
+                if iteration > 0 and iteration % 3 == 0:
+                    progress = self.agent.review_task_progress()
+                    yield self._emit(f"[PA Tasks] {progress}", EventType.THINKING, source="pa-thinking")
+
+                yield self._emit(f"[Iteration {iteration + 1}] Executing Claude...", EventType.TEXT)
+
+                # Show what PA is sending to Claude BEFORE execution (full text)
+                yield self._emit(current_instruction, EventType.TEXT, source="pa-to-claude")
+
+                claude_output_lines = []
+                for event in self._stream_claude(current_instruction):
+                    yield event
+                    if event.content:
+                        claude_output_lines.append(event.content)
+
+                claude_output = "\n".join(claude_output_lines)
+                self._claude_output_buffer.append(claude_output)
+
+                changed_files = self._file_tracker.get_changed_files()
+                if changed_files:
+                    self._session_files_changed.extend(changed_files)
+
+                task_update = self.agent.smart_update_task_status(claude_output)
+                if task_update:
+                    yield self._emit(f"[PA Tasks] {task_update}", EventType.THINKING, source="pa-thinking")
+
+                # ALWAYS verify after Claude finishes before moving on
+                yield self._emit("[PA] Verifying Claude's work...", EventType.TEXT, source="pa")
+                yield from self._run_auto_verification(task, changed_files or [])
+
+                # Detect if Claude is confused/asking for task
+                if self._claude_is_confused(claude_output):
+                    yield self._emit("[PA] Claude lost context - re-sending original task", EventType.THINKING, source="pa-thinking")
+                    current_instruction = task
+                    continue
+
+                reasoning, result = self.agent.run_iteration(claude_output)
+
+                # Show PA's thinking process
+                thinking_output = f"State: {reasoning.current_state}\nProgress: {reasoning.claude_progress}\nDecision: {reasoning.decision}"
+                yield self._emit(thinking_output, EventType.THINKING, source="pa-thinking")
+                yield self._emit(f"[{result.name.value}] {result.output[:300]}", EventType.TOOL_RESULT, source="pa")
+
+                next_instruction = self.agent.get_claude_instruction()
+                current_instruction = next_instruction if next_instruction else self._synthesize_instruction(result)
         
-        self._state = ControllerState.IDLE
+            all_files = list(set(self._session_files_changed))
+            summary = self.agent.generate_session_summary(task, self._claude_output_buffer, all_files)
+            self.agent.save_session_summary(summary)
+
+            if self.agent.is_done:
+                yield self._emit("Task completed", EventType.COMPLETED)
+                status = "completed"
+            else:
+                yield self._emit("Max iterations reached", EventType.ERROR)
+                status = "max_iterations"
+
+            # Record OTEL completion
+            if span:
+                duration = time.time() - task_start_time
+                telemetry.tasks_completed.add(1, {"status": status})
+                telemetry.task_duration.record(duration)
+                span.set_attribute("pa.status", status)
+                span.set_attribute("pa.iterations", iteration + 1)
+                span.end()
+                telemetry.active_sessions.add(-1)
+
+            self._state = ControllerState.IDLE
+
+        except Exception as e:
+            # Record OTEL error
+            if span:
+                telemetry.active_sessions.add(-1)
+                # Only use trace API if OTEL is available
+                try:
+                    from opentelemetry import trace as otel_trace
+                    span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(e)))
+                    span.record_exception(e)
+                except ImportError:
+                    pass
+                span.end()
+            raise
     
     def _stream_claude(self, instruction: str) -> Generator[OutputEvent, None, None]:
+        telemetry = get_telemetry()
         self._file_tracker.reset()
+
+        # Start OTEL span for Claude subprocess if enabled
+        if telemetry.enabled and telemetry.tracer:
+            claude_span = telemetry.tracer.start_span(
+                "claude.subprocess",
+                attributes={
+                    "claude.prompt_length": len(instruction),
+                }
+            )
+            telemetry.claude_iterations.add(1)
+        else:
+            claude_span = None
+
         try:
             process = subprocess.Popen(
-                ["claude", "-p", instruction, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"],
+                [self.claude_bin, "-p", instruction, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=self.working_dir,
                 bufsize=1  # Line-buffered for faster output
             )
@@ -175,13 +242,41 @@ class PA:
                 except json.JSONDecodeError:
                     yield self._emit(line, EventType.RAW, source="claude")
             process.wait(timeout=300)
+
+            # Complete Claude span
+            if claude_span:
+                claude_span.set_attribute("claude.completed", True)
+                claude_span.end()
+
         except subprocess.TimeoutExpired:
             process.kill()
             yield self._emit("[Claude timed out]", EventType.ERROR, source="claude")
+            if claude_span:
+                try:
+                    from opentelemetry import trace as otel_trace
+                    claude_span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, "Timeout"))
+                except ImportError:
+                    pass
+                claude_span.end()
         except FileNotFoundError:
             yield self._emit("[Claude CLI not found]", EventType.ERROR, source="claude")
+            if claude_span:
+                try:
+                    from opentelemetry import trace as otel_trace
+                    claude_span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, "CLI not found"))
+                except ImportError:
+                    pass
+                claude_span.end()
         except Exception as e:
             yield self._emit(f"[Error: {e}]", EventType.ERROR, source="claude")
+            if claude_span:
+                try:
+                    from opentelemetry import trace as otel_trace
+                    claude_span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(e)))
+                    claude_span.record_exception(e)
+                except ImportError:
+                    pass
+                claude_span.end()
     
     def _parse_claude_event(self, data: Dict[str, Any]) -> Generator[OutputEvent, None, None]:
         event_type = data.get("type", "")

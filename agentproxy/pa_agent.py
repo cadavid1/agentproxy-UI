@@ -7,26 +7,31 @@ Observes Claude's output, reasons about progress, and decides next actions.
 """
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
-from gemini_client import GeminiClient
+from .gemini_client import GeminiClient
+from .telemetry import get_telemetry
 
-# Load .env from project root
-_env_path = Path(__file__).parent / ".env"
+# Load .env from project root (go up from agentproxy/ to project root)
+_env_path = Path(__file__).parent.parent / ".env"
 if _env_path.exists():
     load_dotenv(_env_path)
-from function_executor import (
+else:
+    # Try current working directory as fallback
+    load_dotenv()
+from .function_executor import (
     FunctionExecutor,
     FunctionCall,
     FunctionResult,
     FunctionName,
     FUNCTION_DECLARATIONS,
 )
-from models import PAReasoning, AgentLoopOutput
-from pa_memory import PAMemory
+from .models import PAReasoning, AgentLoopOutput
+from .pa_memory import PAMemory
 
 
 class PAAgent:
@@ -301,31 +306,65 @@ You must output:
     def run_iteration(self, recent_claude_output: str) -> Tuple[PAReasoning, FunctionResult]:
         """
         Run a single agent loop iteration.
-        
+
         Args:
             recent_claude_output: Most recent output from Claude.
-            
+
         Returns:
             Tuple of (PA reasoning, function execution result).
         """
+        telemetry = get_telemetry()
         self._iteration += 1
-        
-        # Build prompt
-        user_prompt = self._build_iteration_prompt(recent_claude_output)
-        system_prompt = self.SYSTEM_PROMPT.format(
-            functions=self._build_functions_description()
-        )
-        
-        # Get Gemini response
-        if not self._gemini:
-            output = self._fallback_output()
+
+        # Start OTEL span for PA reasoning if enabled
+        if telemetry.enabled and telemetry.tracer:
+            reasoning_span = telemetry.tracer.start_span(
+                "pa.reasoning_loop",
+                attributes={
+                    "pa.iteration": self._iteration,
+                    "pa.output_length": len(recent_claude_output),
+                }
+            )
+            start_time = time.time()
         else:
-            image_paths = self._collect_image_paths()
-            response = self._gemini.call(system_prompt, user_prompt, image_paths or None)
-            output = self._parse_agent_output(response)
-        
-        # Execute function
-        result = self._executor.execute(output.function_call)
+            reasoning_span = None
+
+        try:
+            # Build prompt
+            user_prompt = self._build_iteration_prompt(recent_claude_output)
+            system_prompt = self.SYSTEM_PROMPT.format(
+                functions=self._build_functions_description()
+            )
+
+            # Get Gemini response
+            if not self._gemini:
+                output = self._fallback_output()
+            else:
+                image_paths = self._collect_image_paths()
+                response = self._gemini.call(system_prompt, user_prompt, image_paths or None)
+                output = self._parse_agent_output(response)
+
+            # Execute function
+            result = self._executor.execute(output.function_call)
+
+            # Record OTEL metrics
+            if reasoning_span:
+                duration = time.time() - start_time
+                telemetry.pa_reasoning_duration.record(duration)
+                telemetry.pa_decisions.add(1, {"decision": output.reasoning.decision})
+                reasoning_span.set_attribute("pa.decision", output.reasoning.decision)
+                reasoning_span.set_attribute("pa.function", output.function_call.name.value)
+                reasoning_span.end()
+        except Exception as e:
+            if reasoning_span:
+                try:
+                    from opentelemetry import trace as otel_trace
+                    reasoning_span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(e)))
+                    reasoning_span.record_exception(e)
+                except ImportError:
+                    pass
+                reasoning_span.end()
+            raise
         
         # Check if done
         if result.metadata.get("done"):

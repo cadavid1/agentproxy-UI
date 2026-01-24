@@ -10,7 +10,7 @@ import sys
 from typing import Optional, TextIO
 from enum import Enum
 
-from models import OutputEvent, EventType
+from .models import OutputEvent, EventType
 
 
 class DisplayMode(Enum):

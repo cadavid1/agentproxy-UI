@@ -1,5 +1,5 @@
 """
-Interactive Labs - PA (Proxy Agent)
+Agent Proxy - PA (Proxy Agent)
 ===============================================
 
 Unified AI agent that supervises Claude Code with:
@@ -13,18 +13,18 @@ Three-tier memory system:
 3. Interaction History: Rolling window of Claude interactions
 
 Usage:
-    from interactive_labs import PA
-    
+    from agentproxy import PA
+
     pa = PA(working_dir=".", user_mission="Build a REST API")
     for event in pa.run_task("Create user endpoints"):
         print(event)
 """
 
-from models import OutputEvent, EventType, ControllerState
-from pa import PA, create_pa, list_sessions
-from pa_memory import PAMemory, BestPractices, SessionContext, InteractionHistory
-from process_manager import ClaudeProcessManager
-from display import RealtimeDisplay
+from .models import OutputEvent, EventType, ControllerState
+from .pa import PA, create_pa, list_sessions
+from .pa_memory import PAMemory, BestPractices, SessionContext, InteractionHistory
+from .process_manager import ClaudeProcessManager
+from .display import RealtimeDisplay
 
 __all__ = [
     # Primary API
