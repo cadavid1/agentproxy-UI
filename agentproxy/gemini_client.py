@@ -135,8 +135,8 @@ class GeminiClient:
             except GeminiAPIError as e:
                 last_error = e
 
-                # Don't retry on client errors (4xx) - these won't succeed
-                if e.is_client_error:
+                # Don't retry on client errors (4xx) or non-retryable errors
+                if e.is_client_error or not e.retryable:
                     return e.to_error_string()
 
                 # Retry on server errors (5xx) and network errors

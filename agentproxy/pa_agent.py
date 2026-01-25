@@ -91,12 +91,25 @@ You must output:
 - Use SEND_TO_CLAUDE to guide Claude's next action
 - Use VERIFY_CODE / RUN_TESTS before marking done
 - Only MARK_DONE when ALL requirements are verified working
+
+## CRITICAL: WHAT "DONE" MEANS
+- **The CURRENT TASK (user's original request) is the ONLY requirement**
+- The TASK BREAKDOWN is just a suggested approach - NOT additional requirements
+- When verification succeeds, ask: "Does this satisfy the ORIGINAL TASK?"
+  - If YES → Call MARK_DONE immediately
+  - If NO → Continue work
+- Examples:
+  - Task: "create hello world script" + Verification: script runs & prints "Hello, World!" → DONE
+  - Task: "add login page" + Breakdown says "add validation" but task didn't → Still DONE if page works
+- **Don't add requirements that weren't in the original task**
+- **Don't keep iterating on hallucinated details from the breakdown**
+
 - NEVER request human input - YOU are the human proxy
 - If Claude asks questions, answer them based on the mission/task context
-- Keep pushing Claude until the task is ACTUALLY DONE and VERIFIED
 
 ## TASK MANAGEMENT
 - At the START of a new task, break it down into subtasks using CREATE_TASK
+- The breakdown is a GUIDE for approach, not a requirements checklist
 - Track progress by updating task status as work progresses
 - Mark tasks complete when verified done
 - Use the task list to decide what to assign Claude next
@@ -414,7 +427,10 @@ FILES TRACKED: {', '.join(self._memory.session.project_files.keys()) or 'None'}
         return f"""
 {self._project_context}
 
-## TASK BREAKDOWN
+## ORIGINAL TASK (THE ONLY REQUIREMENT)
+{self._memory.session.user_prompt or 'Not specified'}
+
+## TASK BREAKDOWN (SUGGESTED APPROACH ONLY - NOT ADDITIONAL REQUIREMENTS)
 {task_breakdown}
 
 ## CURRENT PROGRESS
@@ -433,6 +449,7 @@ FILES TRACKED: {', '.join(self._memory.session.project_files.keys()) or 'None'}
 {recent_claude_output[:3000]}
 
 ---
+REMEMBER: When verification succeeds, check if the ORIGINAL TASK is satisfied, NOT the breakdown.
 Based on current progress, provide your REASONING and FUNCTION_CALL in JSON format.
 """
     
@@ -659,27 +676,27 @@ Based on current progress, provide your REASONING and FUNCTION_CALL in JSON form
         if not self._gemini:
             return f"# Task: {task}\n\n- [ ] Complete the task"
         
-        breakdown_prompt = f"""Break down this coding task into HIGH-LEVEL MILESTONES.
+        breakdown_prompt = f"""Break down this coding task into a SUGGESTED APPROACH.
 
 TASK: {task}
 
-RULES FOR STEPS:
-- Create only 3-5 steps maximum
-- Each step must be INDEPENDENTLY EXECUTABLE by an AI coding agent
-- Each step should take 1-3 Claude iterations to complete
-- Steps should be coarse milestones, NOT micro-tasks
+RULES:
+- Create only 2-4 suggested steps
+- Each step is a suggested milestone, NOT a requirement
+- Steps should be coarse suggestions, NOT detailed specifications
+- DO NOT add requirements that aren't in the original task
+- DO NOT specify implementation details like file names unless the task explicitly requires them
 
 FORMAT:
 ## Goal
-[One sentence]
+[Restate the original task in one sentence]
 
-## Steps
-- [ ] Step 1: [High-level milestone]
-- [ ] Step 2: [High-level milestone]
-- [ ] Step 3: [High-level milestone]
+## Suggested Approach
+- [ ] Step 1: [Suggested milestone]
+- [ ] Step 2: [Suggested milestone]
 
-## Done When
-[Success criteria]"""
+## Success Criteria
+[What would prove the ORIGINAL TASK is complete - nothing more, nothing less]"""
         
         try:
             return self._gemini.call(

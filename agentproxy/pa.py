@@ -126,7 +126,7 @@ class PA:
             iteration = 0
 
             for iteration in range(max_iterations):
-                if self.agent.is_done:
+                if self.agent.is_done or self._state == ControllerState.DONE:
                     break
 
                 if iteration > 0 and iteration % 3 == 0:
@@ -157,7 +157,11 @@ class PA:
 
                 # ALWAYS verify after Claude finishes before moving on
                 yield self._emit("[PA] Verifying Claude's work...", EventType.TEXT, source="pa")
-                yield from self._run_auto_verification(task, changed_files or [])
+                verification_result = None
+                for event in self._run_auto_verification(task, changed_files or []):
+                    if event.event_type == EventType.TOOL_RESULT and event.metadata.get("source") == "pa":
+                        verification_result = event.content
+                    yield event
 
                 # Detect if Claude is confused/asking for task
                 if self._claude_is_confused(claude_output):
@@ -165,12 +169,22 @@ class PA:
                     current_instruction = task
                     continue
 
-                reasoning, result = self.agent.run_iteration(claude_output)
+                # Include verification results in PA's reasoning context
+                context_with_verification = claude_output
+                if verification_result:
+                    context_with_verification += f"\n\n[VERIFICATION RESULT]\n{verification_result}"
+
+                reasoning, result = self.agent.run_iteration(context_with_verification)
 
                 # Show PA's thinking process
                 thinking_output = f"State: {reasoning.current_state}\nProgress: {reasoning.claude_progress}\nDecision: {reasoning.decision}"
                 yield self._emit(thinking_output, EventType.THINKING, source="pa-thinking")
                 yield self._emit(f"[{result.name.value}] {result.output[:300]}", EventType.TOOL_RESULT, source="pa")
+
+                # Check if task is marked done
+                if result.metadata.get("done"):
+                    self._state = ControllerState.DONE
+                    break
 
                 # Check if we should exit (session save or other terminal state)
                 if result.metadata.get("exit_gracefully"):

@@ -607,17 +607,19 @@ class FunctionExecutor:
         """Execute Python files to verify they work."""
         file_paths = args.get("file_paths", [])
         results = []
-        
+
         for filepath in file_paths:
             full_path = self._resolve_path(filepath)
-            
+
             if not os.path.exists(full_path):
                 results.append(f"{filepath}: FILE NOT FOUND")
                 continue
-            
+
             try:
+                # Use relative path since we set cwd
+                rel_path = os.path.relpath(full_path, self.working_dir)
                 result = subprocess.run(
-                    ["python3", full_path],
+                    ["python3", rel_path],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -1307,13 +1309,10 @@ Format:
         results = []
         for script in script_files[:3]:
             try:
-                # Use absolute path or make relative to working_dir
-                if not os.path.isabs(script):
-                    script_path = os.path.join(self.working_dir, script)
-                else:
-                    script_path = script
+                # Make path relative to working_dir since we set cwd
+                rel_path = os.path.relpath(script, self.working_dir)
 
-                cmd = ["python3", script_path] if script_path.endswith(".py") else ["node", script_path]
+                cmd = ["python3", rel_path] if rel_path.endswith(".py") else ["node", rel_path]
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
