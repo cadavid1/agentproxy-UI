@@ -126,7 +126,8 @@ Examples:
         parser.add_argument(
             "--claude-bin",
             metavar="PATH",
-            help="Path to claude binary (default: 'claude' from PATH)"
+            default=os.getenv("CLAUDE_BIN"),
+            help="Path to claude binary (default: CLAUDE_BIN env var or 'claude' from PATH)"
         )
 
         parser.add_argument(
@@ -509,6 +510,18 @@ Examples:
 
 def main() -> int:
     """Main entry point."""
+    # Load .env file if present (for telemetry and other config)
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        # Load from project root .env
+        env_path = Path.cwd() / ".env"
+        if env_path.exists():
+            load_dotenv(env_path)
+    except ImportError:
+        # python-dotenv not installed, skip
+        pass
+
     cli = CLI()
     return cli.run()
 

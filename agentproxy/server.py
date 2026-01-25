@@ -140,6 +140,7 @@ async def stream_task(
                 working_dir=working_dir,
                 session_id=session_id,
                 user_mission=mission,
+                claude_bin=os.getenv("CLAUDE_BIN"),
             )
             
             # Attach screenshots if provided
@@ -286,6 +287,18 @@ async def health_check():
 
 def main():
     """Run the server."""
+    # Load .env file if present (for telemetry and other config)
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        # Load from project root .env
+        env_path = Path.cwd() / ".env"
+        if env_path.exists():
+            load_dotenv(env_path)
+    except ImportError:
+        # python-dotenv not installed, skip
+        pass
+
     parser = argparse.ArgumentParser(description="PA Web Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
