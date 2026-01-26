@@ -226,8 +226,100 @@ class PA:
                 if enrichment.tags:
                     telemetry.log(f"Tool enrichment: {tool_name} tags={enrichment.tags}")
 
+    def _should_use_multi_worker(self) -> bool:
+        """Check whether multi-worker dispatch should be used.
+
+        All three conditions must be true:
+        1. AGENTPROXY_MULTI_WORKER=1 env var is set
+        2. celery package is importable
+        3. redis package is importable
+        """
+        import os
+        if os.getenv("AGENTPROXY_MULTI_WORKER", "0") != "1":
+            return False
+        try:
+            from .coordinator import is_celery_available
+            return is_celery_available()
+        except ImportError:
+            return False
+
     def run_task(self, task: str, max_iterations: int = 100) -> Generator[OutputEvent, None, None]:
-        """Execute a task with PA supervising Claude."""
+        """Execute a task with PA supervising Claude.
+
+        If multi-worker mode is enabled (``AGENTPROXY_MULTI_WORKER=1`` and
+        Celery+Redis are available), tasks are decomposed into milestones
+        and dispatched to Celery workers.  Otherwise the existing
+        single-worker path is used.
+        """
+        if self._should_use_multi_worker():
+            yield from self._run_task_multi_worker(task, max_iterations)
+        else:
+            yield from self._run_task_single_worker(task, max_iterations)
+
+    def _run_task_multi_worker(self, task: str, max_iterations: int = 100) -> Generator[OutputEvent, None, None]:
+        """Execute a task via Celery-based multi-worker coordination."""
+        import os
+        telemetry = get_telemetry()
+
+        # Start OTEL span if enabled
+        if telemetry.enabled and telemetry.tracer:
+            span = telemetry.tracer.start_span(
+                "pa.run_task",
+                attributes={
+                    "pa.session_id": self.session_id,
+                    "pa.task.description": task[:100],
+                    "pa.working_dir": self.working_dir,
+                    "pa.max_iterations": max_iterations,
+                    "pa.project_id": os.getenv("AGENTPROXY_PROJECT_ID", "default"),
+                    "pa.mode": "multi_worker",
+                }
+            )
+            telemetry.tasks_started.add(1)
+            telemetry.active_sessions.add(1)
+            task_start_time = time.time()
+        else:
+            span = None
+
+        try:
+            self._state = ControllerState.PROCESSING
+            self._session_files_changed = []
+            self._ensure_git_repo()
+
+            from .coordinator import Coordinator
+            queue = os.getenv("AGENTPROXY_TASK_QUEUE", "default")
+            coord = Coordinator(self, queue=queue)
+            yield from coord.run_task_multi_worker(task, max_iterations)
+
+            if self._state == ControllerState.PROCESSING:
+                self._state = ControllerState.DONE
+
+            status = "completed" if self._state == ControllerState.DONE else "error"
+
+            if span:
+                duration = time.time() - task_start_time
+                telemetry.tasks_completed.add(1, {"status": status})
+                telemetry.task_duration.record(duration)
+                span.set_attribute("pa.status", status)
+                span.end()
+                telemetry.active_sessions.add(-1)
+
+                from .telemetry import flush_telemetry
+                flush_telemetry()
+
+        except Exception as e:
+            if span:
+                telemetry.active_sessions.add(-1)
+                try:
+                    from opentelemetry import trace as otel_trace
+                    span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(e)))
+                    span.record_exception(e)
+                except ImportError:
+                    pass
+                span.end()
+            raise
+
+    def _run_task_single_worker(self, task: str, max_iterations: int = 100) -> Generator[OutputEvent, None, None]:
+        """Execute a task in single-worker mode (original run_task logic)."""
         telemetry = get_telemetry()
 
         # Start OTEL span if enabled
@@ -371,7 +463,7 @@ class PA:
                         # During error states (NO_OP), keep the last valid instruction
                         # This ensures Claude maintains context even when PA can't reason
                         current_instruction = self._last_valid_instruction
-        
+
             all_files = list(set(self._session_files_changed))
             summary = self.agent.generate_session_summary(task, self._claude_output_buffer, all_files)
             self.agent.save_session_summary(summary)

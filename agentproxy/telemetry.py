@@ -303,6 +303,23 @@ if OTEL_AVAILABLE:
                 unit="%",
             )
 
+            # Multi-worker coordination tracking
+            self.milestones_dispatched = self.meter.create_counter(
+                "agentproxy.milestones.dispatched",
+                description="Number of milestones dispatched to workers",
+                unit="1",
+            )
+            self.milestones_completed = self.meter.create_counter(
+                "agentproxy.milestones.completed",
+                description="Number of milestones completed by workers",
+                unit="1",
+            )
+            self.milestone_duration = self.meter.create_histogram(
+                "agentproxy.milestone.duration",
+                description="Milestone execution duration",
+                unit="s",
+            )
+
             # Code change tracking
             self.code_lines_added = self.meter.create_counter(
                 "agentproxy.code.lines_added",
