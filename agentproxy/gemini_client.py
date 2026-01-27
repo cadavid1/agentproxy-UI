@@ -105,6 +105,7 @@ class GeminiClient:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         max_retries: int = 3,
+        extra_parts: Optional[List[str]] = None,
     ) -> str:
         """
         Make API call to Gemini with optional images and retry logic.
@@ -116,6 +117,7 @@ class GeminiClient:
             temperature: Sampling temperature (0.0-1.0).
             max_tokens: Maximum output tokens.
             max_retries: Maximum number of retry attempts (default: 3).
+            extra_parts: Optional list of extra text parts to append after user_prompt.
 
         Returns:
             Model's text response.
@@ -131,6 +133,7 @@ class GeminiClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     attempt=attempt,
+                    extra_parts=extra_parts,
                 )
             except GeminiAPIError as e:
                 last_error = e
@@ -164,6 +167,7 @@ class GeminiClient:
         temperature: float,
         max_tokens: int,
         attempt: int,
+        extra_parts: Optional[List[str]] = None,
     ) -> str:
         """
         Single API call attempt (internal method).
@@ -197,6 +201,11 @@ class GeminiClient:
                 {"text": system_prompt},
                 {"text": user_prompt},
             ]
+
+            # Append extra text parts after user_prompt
+            if extra_parts:
+                for part_text in extra_parts:
+                    parts.append({"text": part_text})
 
             # Add images as inline base64 data
             if image_paths:

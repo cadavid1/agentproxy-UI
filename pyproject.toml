@@ -45,6 +45,12 @@ telemetry = [
     "opentelemetry-instrumentation-fastapi>=0.41b0",
 ]
 
+# Multi-worker coordination (Celery + Redis)
+worker = [
+    "celery[redis]>=5.3.0",
+    "redis>=5.0.0",
+]
+
 # Plugin system dependencies (future)
 plugins = [
     # No extra deps initially, may add later
@@ -61,12 +67,13 @@ dev = [
 
 # All optional dependencies
 all = [
-    "agentproxy[server,telemetry,plugins,dev]",
+    "agentproxy[server,telemetry,worker,plugins,dev]",
 ]
 
 [project.scripts]
 pa = "agentproxy.cli:main"
 pa-server = "agentproxy.server:main"
+pa-worker = "agentproxy.coordinator.worker_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/allenday/agentproxy"

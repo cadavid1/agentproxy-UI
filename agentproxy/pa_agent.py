@@ -46,78 +46,25 @@ class PAAgent:
         4. Function executes and result feeds back
     """
     
-    SYSTEM_PROMPT = """You are PA (Proxy Agent), an AI agent that supervises Claude Code.
+    def _build_system_prompt(self) -> str:
+        """Assemble system prompt from resource files.
 
-You run in a continuous loop, observing Claude's work and deciding actions.
+        Loads pa_agent_loop.md, pa_done_detection.md, and pa_stall_prevention.md
+        from the prompts directory, then injects the dynamic functions description.
+        """
+        parts = []
+        prompts_dir = Path(__file__).parent / "prompts"
 
-## YOUR ROLE
-- Monitor Claude's progress on the task
-- Verify claims with actual execution
-- Guide Claude when stuck or off-track
-- Ensure quality and completeness
+        for name in ["pa_agent_loop.md", "pa_done_detection.md",
+                      "pa_stall_prevention.md"]:
+            path = prompts_dir / name
+            if path.exists():
+                parts.append(path.read_text(encoding="utf-8"))
 
-## EACH ITERATION
-You receive:
-1. System context and best practices
-2. History of reasoning and Claude's steps
-3. Most recent Claude output
-4. Available functions you can call
-
-You must output:
-1. REASONING: Your analysis of current state
-2. FUNCTION_CALL: One function to execute
-
-## OUTPUT FORMAT (JSON)
-```json
-{{
-  "reasoning": {{
-    "current_state": "Where we are in the task...",
-    "claude_progress": "What Claude has accomplished...",
-    "insights": "Observations from project perspective...",
-    "decision": "What I will do and why..."
-  }},
-  "function_call": {{
-    "name": "function_name",
-    "arguments": {{...}}
-  }}
-}}
-```
-
-## AVAILABLE FUNCTIONS
-{functions}
-
-## GUIDELINES
-- You are the HUMAN'S PROXY - act on their behalf autonomously
-- Be SKEPTICAL of Claude's claims - verify with actual execution
-- Use SEND_TO_CLAUDE to guide Claude's next action
-- Use VERIFY_CODE / RUN_TESTS before marking done
-- MARK_DONE immediately when verification passes (don't over-verify)
-
-## CRITICAL: WHAT "DONE" MEANS
-- **The CURRENT TASK (user's original request) is the ONLY requirement**
-- The TASK BREAKDOWN is just a suggested approach - NOT additional requirements
-- When verification succeeds (script runs without errors), ask: "Does this satisfy the ORIGINAL TASK?"
-  - If YES → Call MARK_DONE immediately (don't do additional testing/review)
-  - If NO → Continue work
-- Examples:
-  - Task: "create hello world script" + Verification: script runs & prints "Hello, World!" → DONE
-  - Task: "create fibonacci with recursive/iterative" + Verification: script runs successfully → DONE (don't test both algorithms)
-  - Task: "add login page" + Verification: page loads → DONE (don't test edge cases unless task asked for it)
-- **Don't add requirements that weren't in the original task**
-- **Don't keep iterating on hallucinated details from the breakdown**
-- **Don't do "comprehensive verification" unless the task explicitly asks for it**
-- **STOP after first successful verification - don't read files to "review changes"**
-
-- NEVER request human input - YOU are the human proxy
-- If Claude asks questions, answer them based on the mission/task context
-
-## TASK MANAGEMENT
-- At the START of a new task, break it down into subtasks using CREATE_TASK
-- The breakdown is a GUIDE for approach, not a requirements checklist
-- Track progress by updating task status as work progresses
-- Mark tasks complete when verified done
-- Use the task list to decide what to assign Claude next
-"""
+        # Inject available functions (dynamic)
+        functions_desc = self._build_functions_description()
+        combined = "\n\n".join(parts)
+        return combined.replace("{functions}", functions_desc)
 
     def __init__(
         self,
@@ -350,9 +297,7 @@ You must output:
         try:
             # Build prompt
             user_prompt = self._build_iteration_prompt(recent_claude_output)
-            system_prompt = self.SYSTEM_PROMPT.format(
-                functions=self._build_functions_description()
-            )
+            system_prompt = self._build_system_prompt()
 
             # Get Gemini response
             if not self._gemini:
@@ -430,6 +375,9 @@ FILES TRACKED: {', '.join(self._memory.session.project_files.keys()) or 'None'}
         
         return f"""
 {self._project_context}
+
+## ITERATION STATUS
+Iteration: {self._iteration}
 
 ## ORIGINAL TASK (THE ONLY REQUIREMENT)
 {self._memory.session.user_prompt or 'Not specified'}
@@ -876,17 +824,77 @@ Write a structured summary with sections:
     def load_session_summary(self) -> Optional[str]:
         """Load previous session summary if it exists."""
         session_id = self._memory.session.session_id
-        
+
         possible_paths = []
         if self.context_dir:
             possible_paths.append(Path(self.context_dir) / "sys" / f"session_{session_id}.txt")
         possible_paths.append(Path(self.working_dir) / "context" / "sys" / f"session_{session_id}.txt")
-        
+
         for path in possible_paths:
             if path.exists():
                 try:
                     return path.read_text(encoding="utf-8")
                 except (IOError, UnicodeDecodeError):
                     pass
-        
+
         return None
+
+    # =========================================================================
+    # Done Classification
+    # =========================================================================
+
+    def classify_done(
+        self,
+        original_task: str,
+        signals_text: str,
+        deltas_text: str,
+        recent_output: str,
+        verification_output: str,
+    ) -> Tuple[str, float, str]:
+        """Ask Gemini for a state transition decision.
+
+        Passes artifacts as separate Gemini parts to avoid escaping.
+
+        Returns:
+            (decision, confidence, reason) where decision is one of
+            "DONE", "CONTINUE", "ERROR", "STOP".
+            On parse failure returns ("STOP", 0.0, "classifier parse error").
+        """
+        prompts_dir = Path(__file__).parent / "prompts"
+        template_path = prompts_dir / "pa_done_classifier.md"
+        if not template_path.exists():
+            return "STOP", 0.0, "classifier prompt not found"
+
+        template = template_path.read_text(encoding="utf-8")
+        user_prompt = template.replace("{signals}", signals_text)
+        user_prompt = user_prompt.replace("{deltas}", deltas_text)
+
+        extra_parts = [
+            f"[ARTIFACT: ORIGINAL TASK]\n{original_task}",
+            f"[ARTIFACT: RECENT CLAUDE OUTPUT]\n{recent_output}",
+            f"[ARTIFACT: VERIFICATION OUTPUT]\n{verification_output}",
+        ]
+
+        response = self._gemini.call(
+            system_prompt="You are a task state classifier. Output only JSON.",
+            user_prompt=user_prompt,
+            extra_parts=extra_parts,
+            temperature=0.2,
+            max_tokens=256,
+        )
+
+        try:
+            text = response.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            data = json.loads(text)
+            decision = str(data.get("decision", "CONTINUE")).upper()
+            if decision not in ("DONE", "CONTINUE", "ERROR", "STOP"):
+                decision = "CONTINUE"
+            return (
+                decision,
+                float(data.get("confidence", 0.0)),
+                str(data.get("reason", "")),
+            )
+        except (json.JSONDecodeError, ValueError, KeyError):
+            return "STOP", 0.0, f"classifier parse error: {response[:100]}"

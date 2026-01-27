@@ -27,6 +27,15 @@ from .pa_memory import PAMemory
 from .telemetry import get_telemetry
 
 
+def _jaccard_similarity(a: str, b: str) -> float:
+    """Compute Jaccard similarity between two strings using word sets."""
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    if not words_a or not words_b:
+        return 0.0
+    return len(words_a & words_b) / len(words_a | words_b)
+
+
 class PADecision(str, Enum):
     """PA's decision after analyzing Claude's output."""
     CONTINUE = "continue"
@@ -85,6 +94,8 @@ class PA:
         self._claude_output_buffer: List[str] = []
         self._session_files_changed: List[str] = []
         self._previous_summary = self.agent.load_session_summary()
+        self._round_deltas: list[dict] = []
+        self._last_claude_output: str = ""
 
         # Track the original task and last valid instruction for error recovery
         self._original_task: str = ""
@@ -122,6 +133,8 @@ class PA:
         self._state = ControllerState.IDLE
         self._claude_output_buffer = []
         self._session_files_changed = []
+        self._round_deltas.clear()
+        self._last_claude_output = ""
 
     def _get_subprocess_env_with_trace_context(self) -> Dict[str, str]:
         """
@@ -226,8 +239,100 @@ class PA:
                 if enrichment.tags:
                     telemetry.log(f"Tool enrichment: {tool_name} tags={enrichment.tags}")
 
+    def _should_use_multi_worker(self) -> bool:
+        """Check whether multi-worker dispatch should be used.
+
+        All three conditions must be true:
+        1. AGENTPROXY_MULTI_WORKER=1 env var is set
+        2. celery package is importable
+        3. redis package is importable
+        """
+        import os
+        if os.getenv("AGENTPROXY_MULTI_WORKER", "0") != "1":
+            return False
+        try:
+            from .coordinator import is_celery_available
+            return is_celery_available()
+        except ImportError:
+            return False
+
     def run_task(self, task: str, max_iterations: int = 100) -> Generator[OutputEvent, None, None]:
-        """Execute a task with PA supervising Claude."""
+        """Execute a task with PA supervising Claude.
+
+        If multi-worker mode is enabled (``AGENTPROXY_MULTI_WORKER=1`` and
+        Celery+Redis are available), tasks are decomposed into milestones
+        and dispatched to Celery workers.  Otherwise the existing
+        single-worker path is used.
+        """
+        if self._should_use_multi_worker():
+            yield from self._run_task_multi_worker(task, max_iterations)
+        else:
+            yield from self._run_task_single_worker(task, max_iterations)
+
+    def _run_task_multi_worker(self, task: str, max_iterations: int = 100) -> Generator[OutputEvent, None, None]:
+        """Execute a task via Celery-based multi-worker coordination."""
+        import os
+        telemetry = get_telemetry()
+
+        # Start OTEL span if enabled
+        if telemetry.enabled and telemetry.tracer:
+            span = telemetry.tracer.start_span(
+                "pa.run_task",
+                attributes={
+                    "pa.session_id": self.session_id,
+                    "pa.task.description": task[:100],
+                    "pa.working_dir": self.working_dir,
+                    "pa.max_iterations": max_iterations,
+                    "pa.project_id": os.getenv("AGENTPROXY_PROJECT_ID", "default"),
+                    "pa.mode": "multi_worker",
+                }
+            )
+            telemetry.tasks_started.add(1)
+            telemetry.active_sessions.add(1)
+            task_start_time = time.time()
+        else:
+            span = None
+
+        try:
+            self._state = ControllerState.PROCESSING
+            self._session_files_changed = []
+            self._ensure_git_repo()
+
+            from .coordinator import Coordinator
+            queue = os.getenv("AGENTPROXY_TASK_QUEUE", "default")
+            coord = Coordinator(self, queue=queue)
+            yield from coord.run_task_multi_worker(task, max_iterations)
+
+            if self._state == ControllerState.PROCESSING:
+                self._state = ControllerState.DONE
+
+            status = "completed" if self._state == ControllerState.DONE else "error"
+
+            if span:
+                duration = time.time() - task_start_time
+                telemetry.tasks_completed.add(1, {"status": status})
+                telemetry.task_duration.record(duration)
+                span.set_attribute("pa.status", status)
+                span.end()
+                telemetry.active_sessions.add(-1)
+
+                from .telemetry import flush_telemetry
+                flush_telemetry()
+
+        except Exception as e:
+            if span:
+                telemetry.active_sessions.add(-1)
+                try:
+                    from opentelemetry import trace as otel_trace
+                    span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(e)))
+                    span.record_exception(e)
+                except ImportError:
+                    pass
+                span.end()
+            raise
+
+    def _run_task_single_worker(self, task: str, max_iterations: int = 100) -> Generator[OutputEvent, None, None]:
+        """Execute a task in single-worker mode (original run_task logic)."""
         telemetry = get_telemetry()
 
         # Start OTEL span if enabled
@@ -333,6 +438,106 @@ class PA:
                 if verification_result:
                     context_with_verification += f"\n\n[VERIFICATION RESULT]\n{verification_result}"
 
+                # Determine if verification truly passed (not vacuous)
+                verification_passed = (
+                    verification_result is not None
+                    and "PASS" in verification_result.upper()
+                    and "skipped" not in verification_result.lower()
+                    and "no executable" not in verification_result.lower()
+                    and "no scripts found" not in verification_result.lower()
+                )
+
+                # --- Record round delta ---
+                lines_added, lines_removed = self._file_tracker.get_code_changes()
+                similarity = _jaccard_similarity(claude_output, self._last_claude_output)
+                self._round_deltas.append({
+                    "round": iteration + 1,
+                    "lines_added": lines_added,
+                    "lines_removed": lines_removed,
+                    "output_similarity": round(similarity, 2),
+                    "instruction_sent": current_instruction[:100],
+                })
+                self._last_claude_output = claude_output
+
+                claude_stream_done = self._file_tracker.is_done
+
+                # --- Cheap gate: should we invoke the classifier? ---
+                recent_deltas = self._round_deltas[-5:]
+                no_code_rounds = sum(1 for d in recent_deltas if d["lines_added"] == 0 and d["lines_removed"] == 0)
+
+                should_classify = (
+                    verification_passed
+                    or no_code_rounds >= 3
+                    or claude_stream_done
+                )
+
+                if should_classify:
+                    signals_text = (
+                        f"iteration: {iteration + 1} / {max_iterations}\n"
+                        f"verification_passed: {verification_passed}\n"
+                        f"claude_stream_done: {claude_stream_done}\n"
+                        f"total_rounds: {len(self._round_deltas)}\n"
+                        f"recent_rounds_without_code_changes: {no_code_rounds}"
+                    )
+
+                    import json as _json
+                    deltas_text = _json.dumps(recent_deltas, indent=2)
+
+                    buf_len = len(self._claude_output_buffer)
+                    recent_rounds = self._claude_output_buffer[-min(3, buf_len):] if buf_len else []
+                    recent_text = "\n\n---\n\n".join(
+                        f"[Round {buf_len - len(recent_rounds) + i + 1}]\n{r}"
+                        for i, r in enumerate(recent_rounds)
+                    )
+
+                    decision, confidence, reason = self.agent.classify_done(
+                        original_task=task,
+                        signals_text=signals_text,
+                        deltas_text=deltas_text,
+                        recent_output=recent_text,
+                        verification_output=verification_result or "",
+                    )
+
+                    if decision == "DONE" and confidence >= 0.8:
+                        yield self._emit(
+                            f"[PA] DONE (confidence={confidence:.2f}): {reason}",
+                            EventType.TEXT, source="pa",
+                        )
+                        self._state = ControllerState.DONE
+                        self.agent._is_done = True
+                        telemetry = get_telemetry()
+                        if telemetry.enabled and hasattr(telemetry, 'auto_completions'):
+                            telemetry.auto_completions.add(1)
+                        break
+                    elif decision == "ERROR" and confidence >= 0.8:
+                        yield self._emit(
+                            f"[PA] ERROR (confidence={confidence:.2f}): {reason}",
+                            EventType.ERROR, source="pa",
+                        )
+                        self._state = ControllerState.ERROR
+                        break
+                    elif decision == "STOP" and confidence >= 0.8:
+                        yield self._emit(
+                            f"[PA] STOPPED (confidence={confidence:.2f}): {reason}",
+                            EventType.TEXT, source="pa",
+                        )
+                        self._state = ControllerState.STOPPED
+                        break
+                    elif decision == "DONE":
+                        # Low confidence DONE — hint to reasoning loop
+                        context_with_verification += (
+                            f"\n\n[DONE CLASSIFIER] confidence={confidence:.2f}: {reason}. "
+                            "Call MARK_DONE if the original task is satisfied."
+                        )
+                    elif no_code_rounds >= 3:
+                        # CONTINUE but stalling — inject warning
+                        context_with_verification += (
+                            f"\n\n[PROGRESS WARNING] No code changes for "
+                            f"{no_code_rounds} of last {len(recent_deltas)} rounds. "
+                            "Call MARK_DONE if done, or SEND_TO_CLAUDE with a "
+                            "SPECIFIC new instruction."
+                        )
+
                 reasoning, result = self.agent.run_iteration(context_with_verification)
 
                 # Show PA's thinking process
@@ -371,15 +576,18 @@ class PA:
                         # During error states (NO_OP), keep the last valid instruction
                         # This ensures Claude maintains context even when PA can't reason
                         current_instruction = self._last_valid_instruction
-        
+
             all_files = list(set(self._session_files_changed))
             summary = self.agent.generate_session_summary(task, self._claude_output_buffer, all_files)
             self.agent.save_session_summary(summary)
 
-            if self.agent.is_done:
+            if self.agent.is_done or self._state == ControllerState.DONE:
                 yield self._emit("Task completed", EventType.COMPLETED)
                 status = "completed"
                 # State already set to DONE when MARK_DONE was called
+            elif self._state in (ControllerState.STOPPED, ControllerState.ERROR):
+                # Classifier gate already set a terminal state — preserve it
+                status = "stopped" if self._state == ControllerState.STOPPED else "error"
             else:
                 yield self._emit("Max iterations reached", EventType.ERROR)
                 status = "max_iterations"
@@ -626,23 +834,35 @@ class PA:
         """
         Synthesize an instruction to send to Claude based on function result.
 
-        For NO_OP results (which occur during errors), we avoid sending vague
-        instructions and instead remain silent to let Claude continue naturally.
+        Exhaustive match over all FunctionName values. Returns empty string
+        when no instruction change is needed (the main loop keeps the previous
+        instruction in that case).
         """
         if result.name == FunctionName.VERIFY_CODE:
             return "Continue" if result.success else f"Fix: {result.output[:200]}"
         elif result.name == FunctionName.RUN_TESTS:
             return "Continue" if result.success else f"Fix tests: {result.output[:200]}"
-        elif result.name == FunctionName.NO_OP:
-            # For NO_OP, remain silent (empty string signals no instruction change)
-            # This prevents sending confusing "Continue" messages during error states
-            # The main loop will keep the previous instruction instead
+        elif result.name == FunctionName.VERIFY_PRODUCT:
+            return "" if result.success else f"Fix: {result.output[:200]}"
+        elif result.name == FunctionName.CHECK_SERVER:
+            return "" if result.success else f"Server check failed: {result.output[:200]}"
+        elif result.name == FunctionName.REVIEW_CHANGES:
+            if result.metadata.get("has_issues"):
+                return f"Fix review issues: {result.output[:200]}"
             return ""
-        elif result.name == FunctionName.SAVE_SESSION:
-            # Session save triggered - let it exit naturally
+        elif result.name == FunctionName.SEND_TO_CLAUDE:
+            return ""  # Already queued its instruction
+        elif result.name in (
+            FunctionName.NO_OP,
+            FunctionName.SAVE_SESSION,
+            FunctionName.READ_FILE,
+            FunctionName.CREATE_TASK,
+            FunctionName.UPDATE_TASK,
+            FunctionName.COMPLETE_TASK,
+            FunctionName.MARK_DONE,
+        ):
             return ""
-
-        return "Continue with the task."
+        return "Continue with the task."  # Unreachable with exhaustive match
     
     def _emit(self, content: str, event_type: EventType = EventType.TEXT, source: str = "pa") -> OutputEvent:
         return OutputEvent(event_type=event_type, content=content, metadata={"source": source})

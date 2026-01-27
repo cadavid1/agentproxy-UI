@@ -35,6 +35,10 @@ class BestPractices:
     security_rules: str = ""
     qa_patterns: str = ""
     python_best_practices: str = ""
+    pa_agent_loop: str = ""
+    pa_done_detection: str = ""
+    pa_stall_prevention: str = ""
+    pa_done_classifier: str = ""
     
     @classmethod
     def load(cls, prompts_dir: Path) -> "BestPractices":
@@ -64,6 +68,10 @@ class BestPractices:
             security_rules=read_file("security_rules.md"),
             qa_patterns=read_file("qa_patterns.md"),
             python_best_practices=read_file("python_best_practices.md"),
+            pa_agent_loop=read_file("pa_agent_loop.md"),
+            pa_done_detection=read_file("pa_done_detection.md"),
+            pa_stall_prevention=read_file("pa_stall_prevention.md"),
+            pa_done_classifier=read_file("pa_done_classifier.md"),
         )
     
     def get_combined_context(self) -> str:
