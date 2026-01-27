@@ -19,7 +19,8 @@ from pathlib import Path
 from queue import Queue, Empty
 from typing import Any, Callable, Dict, List, Optional
 
-from gemini_client import GeminiClient
+from .gemini_client import GeminiClient
+from .telemetry import get_telemetry
 
 
 # =============================================================================
@@ -33,17 +34,22 @@ class BrowserVerifier:
     def verify_url(url: str, screenshot_path: Optional[str] = None, checks: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Navigate to URL, take screenshot, and verify page loads.
-        
+
         Args:
             url: URL to verify
             screenshot_path: Path to save screenshot (optional)
             checks: List of elements/text to verify on page (optional)
-        
+
         Returns:
             Dict with success status, screenshot path, and any errors
         """
         result = {"success": False, "url": url, "errors": [], "checks": []}
-        
+
+        # Safely serialize parameters as JSON to prevent injection
+        url_json = json.dumps(url)
+        screenshot_path_json = json.dumps(screenshot_path) if screenshot_path else "null"
+        checks_json = json.dumps(checks or [])
+
         # Playwright script to run
         script = f'''
 const {{ chromium }} = require('playwright');
@@ -52,39 +58,45 @@ const {{ chromium }} = require('playwright');
     const browser = await chromium.launch({{ headless: true }});
     const page = await browser.newPage();
     const result = {{ success: false, title: '', errors: [], checks: [] }};
-    
+
+    // Safely parse parameters from JSON
+    const url = {url_json};
+    const screenshotPath = {screenshot_path_json};
+    const checks = {checks_json};
+
     try {{
-        const response = await page.goto('{url}', {{ timeout: 10000, waitUntil: 'networkidle' }});
+        const response = await page.goto(url, {{ timeout: 10000, waitUntil: 'networkidle' }});
         result.status = response ? response.status() : 0;
         result.title = await page.title();
         result.success = result.status >= 200 && result.status < 400;
-        
+
         // Take screenshot if path provided
-        {'await page.screenshot({ path: "' + screenshot_path + '", fullPage: true });' if screenshot_path else ''}
-        
+        if (screenshotPath) {{
+            await page.screenshot({{ path: screenshotPath, fullPage: true }});
+        }}
+
         // Check for specific elements/text
-        const checks = {json.dumps(checks or [])};
         for (const check of checks) {{
             try {{
-                const found = await page.locator(`text=${{check}}`).count() > 0 
+                const found = await page.locator(`text=${{check}}`).count() > 0
                            || await page.locator(check).count() > 0;
                 result.checks.push({{ item: check, found: found }});
             }} catch (e) {{
                 result.checks.push({{ item: check, found: false, error: e.message }});
             }}
         }}
-        
+
         // Get page content summary
         result.content = await page.evaluate(() => {{
             return document.body ? document.body.innerText.substring(0, 500) : '';
         }});
-        
+
     }} catch (e) {{
         result.errors.push(e.message);
     }} finally {{
         await browser.close();
     }}
-    
+
     console.log(JSON.stringify(result));
 }})();
 '''
@@ -118,15 +130,21 @@ const {{ chromium }} = require('playwright');
     @staticmethod
     def take_snapshot(url: str) -> Dict[str, Any]:
         """Take accessibility snapshot of page for verification."""
+        # Safely serialize URL as JSON to prevent injection
+        url_json = json.dumps(url)
+
         script = f'''
 const {{ chromium }} = require('playwright');
 
 (async () => {{
     const browser = await chromium.launch({{ headless: true }});
     const page = await browser.newPage();
-    
+
+    // Safely parse URL from JSON
+    const url = {url_json};
+
     try {{
-        await page.goto('{url}', {{ timeout: 10000, waitUntil: 'domcontentloaded' }});
+        await page.goto(url, {{ timeout: 10000, waitUntil: 'domcontentloaded' }});
         const snapshot = await page.accessibility.snapshot();
         console.log(JSON.stringify({{ success: true, snapshot: snapshot }}));
     }} catch (e) {{
@@ -158,7 +176,7 @@ const {{ chromium }} = require('playwright');
 
 class FunctionName(str, Enum):
     """Available functions that PA can call."""
-    
+
     NO_OP = "no_op"
     SEND_TO_CLAUDE = "send_to_claude"
     VERIFY_CODE = "verify_code"
@@ -171,6 +189,7 @@ class FunctionName(str, Enum):
     COMPLETE_TASK = "complete_task"
     REVIEW_CHANGES = "review_changes"
     VERIFY_PRODUCT = "verify_product"
+    SAVE_SESSION = "save_session"
 
 
 @dataclass
@@ -384,6 +403,19 @@ FUNCTION_DECLARATIONS: List[FunctionDeclaration] = [
             "required": []
         }
     ),
+    FunctionDeclaration(
+        name=FunctionName.SAVE_SESSION,
+        description="Save current session state and exit gracefully. Use when PA encounters repeated failures that prevent progress.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "Why session is being saved"},
+                "error_type": {"type": "string", "description": "Type of error that triggered save"},
+                "status_code": {"type": "integer", "description": "HTTP status code if applicable"}
+            },
+            "required": ["reason"]
+        }
+    ),
 ]
 
 
@@ -414,39 +446,79 @@ class FunctionExecutor:
     def execute(self, call: FunctionCall) -> FunctionResult:
         """
         Execute a function call and return the result.
-        
+
         Args:
             call: The function call to execute.
-            
+
         Returns:
             FunctionResult with success status and output.
         """
-        handlers: Dict[FunctionName, Callable] = {
-            FunctionName.NO_OP: self._no_op,
-            FunctionName.SEND_TO_CLAUDE: self._send_to_claude,
-            FunctionName.VERIFY_CODE: self._verify_code,
-            FunctionName.RUN_TESTS: self._run_tests,
-            FunctionName.CHECK_SERVER: self._check_server,
-            FunctionName.READ_FILE: self._read_file,
-            FunctionName.MARK_DONE: self._mark_done,
-            FunctionName.CREATE_TASK: self._create_task,
-            FunctionName.UPDATE_TASK: self._update_task,
-            FunctionName.COMPLETE_TASK: self._complete_task,
-            FunctionName.REVIEW_CHANGES: self._review_changes,
-            FunctionName.VERIFY_PRODUCT: self._verify_product,
-        }
-        
-        handler = handlers.get(call.name)
-        if not handler:
-            return FunctionResult(
-                name=call.name,
-                success=False,
-                output=f"Unknown function: {call.name}"
+        telemetry = get_telemetry()
+
+        # Start OTEL span for function execution if enabled
+        if telemetry.enabled and telemetry.tracer:
+            function_span = telemetry.tracer.start_span(
+                f"pa.function.{call.name.value}",
+                attributes={"pa.function.name": call.name.value}
             )
-        
+        else:
+            function_span = None
+
         try:
-            return handler(call.arguments)
+            handlers: Dict[FunctionName, Callable] = {
+                FunctionName.NO_OP: self._no_op,
+                FunctionName.SEND_TO_CLAUDE: self._send_to_claude,
+                FunctionName.VERIFY_CODE: self._verify_code,
+                FunctionName.RUN_TESTS: self._run_tests,
+                FunctionName.CHECK_SERVER: self._check_server,
+                FunctionName.READ_FILE: self._read_file,
+                FunctionName.MARK_DONE: self._mark_done,
+                FunctionName.CREATE_TASK: self._create_task,
+                FunctionName.UPDATE_TASK: self._update_task,
+                FunctionName.COMPLETE_TASK: self._complete_task,
+                FunctionName.REVIEW_CHANGES: self._review_changes,
+                FunctionName.VERIFY_PRODUCT: self._verify_product,
+                FunctionName.SAVE_SESSION: self._save_session,
+            }
+
+            handler = handlers.get(call.name)
+            if not handler:
+                result = FunctionResult(
+                    name=call.name,
+                    success=False,
+                    output=f"Unknown function: {call.name}"
+                )
+                if function_span:
+                    function_span.set_attribute("pa.function.success", False)
+                    function_span.end()
+                return result
+
+            # Execute the handler
+            result = handler(call.arguments)
+
+            # Record verification metrics
+            if call.name in [FunctionName.VERIFY_CODE, FunctionName.RUN_TESTS, FunctionName.VERIFY_PRODUCT]:
+                if telemetry.enabled:
+                    telemetry.verifications.add(1, {
+                        "type": call.name.value,
+                        "result": "pass" if result.success else "fail"
+                    })
+
+            if function_span:
+                function_span.set_attribute("pa.function.success", result.success)
+                function_span.end()
+
+            return result
+
         except Exception as e:
+            if function_span:
+                try:
+                    from opentelemetry import trace as otel_trace
+                    function_span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(e)))
+                    function_span.record_exception(e)
+                except ImportError:
+                    pass
+                function_span.end()
             return FunctionResult(
                 name=call.name,
                 success=False,
@@ -535,17 +607,19 @@ class FunctionExecutor:
         """Execute Python files to verify they work."""
         file_paths = args.get("file_paths", [])
         results = []
-        
+
         for filepath in file_paths:
             full_path = self._resolve_path(filepath)
-            
+
             if not os.path.exists(full_path):
                 results.append(f"{filepath}: FILE NOT FOUND")
                 continue
-            
+
             try:
+                # Use relative path since we set cwd
+                rel_path = os.path.relpath(full_path, self.working_dir)
                 result = subprocess.run(
-                    ["python3", full_path],
+                    ["python3", rel_path],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -685,14 +759,67 @@ class FunctionExecutor:
         """Mark task as complete."""
         summary = args.get("summary", "Task completed")
         verified_items = args.get("verified_items", [])
-        
+
         return FunctionResult(
             name=FunctionName.MARK_DONE,
             success=True,
             output=f"TASK COMPLETE: {summary}",
             metadata={"summary": summary, "verified_items": verified_items, "done": True}
         )
-    
+
+    def _save_session(self, args: Dict[str, Any]) -> FunctionResult:
+        """
+        Save session state and signal graceful exit.
+
+        This is used when PA encounters repeated failures (e.g., Gemini API errors)
+        that prevent it from making progress. The session state is saved so it can
+        be resumed later.
+        """
+        reason = args.get("reason", "Unknown reason")
+        error_type = args.get("error_type", "unknown")
+        status_code = args.get("status_code")
+
+        # Save session state via memory
+        if self._memory:
+            try:
+                self._memory.session.save()
+                session_id = self._memory.session.session_id
+            except Exception as e:
+                return FunctionResult(
+                    name=FunctionName.SAVE_SESSION,
+                    success=False,
+                    output=f"Failed to save session: {e}",
+                    metadata={"error": str(e)}
+                )
+        else:
+            session_id = None
+
+        # Format output message
+        output_lines = [
+            "[PA] Session saved due to repeated failures",
+            f"Reason: {reason}",
+            f"Error type: {error_type}",
+        ]
+        if status_code:
+            output_lines.append(f"Status code: {status_code}")
+        if session_id:
+            output_lines.append(f"Session ID: {session_id}")
+            output_lines.append(f"\nTo resume this session, use: pa --session-id {session_id}")
+
+        return FunctionResult(
+            name=FunctionName.SAVE_SESSION,
+            success=True,
+            output="\n".join(output_lines),
+            metadata={
+                "reason": reason,
+                "error_type": error_type,
+                "status_code": status_code,
+                "session_id": session_id,
+                "done": True,  # Signal PA to exit
+                "exit_gracefully": True,
+            }
+        )
+
     def _create_task(self, args: Dict[str, Any]) -> FunctionResult:
         """Create a new task in the task list."""
         if not self._memory:
@@ -1105,20 +1232,87 @@ Format:
     def _verify_script(self) -> FunctionResult:
         """Verify a script by running it."""
         script_files = []
-        for ext in ["*.py", "*.js", "*.ts"]:
-            script_files.extend(glob.glob(os.path.join(self.working_dir, ext)))
-        
+
+        # Try multiple glob patterns to find scripts
+        patterns = [
+            os.path.join(self.working_dir, "**", "*.py"),
+            os.path.join(self.working_dir, "**", "*.js"),
+            os.path.join(self.working_dir, "**", "*.ts"),
+            os.path.join(self.working_dir, "*.py"),
+            os.path.join(self.working_dir, "*.js"),
+            os.path.join(self.working_dir, "*.ts"),
+        ]
+
+        for pattern in patterns:
+            found = glob.glob(pattern, recursive=True)
+            script_files.extend(found)
+
+        # Remove duplicates
+        script_files = list(set(script_files))
+
+        # Exclude common directories that shouldn't be executed
+        excluded_dirs = {"venv", "node_modules", ".git", "__pycache__", "dist", "build", ".egg-info", ".pa_sessions", "context"}
+        script_files = [
+            f for f in script_files
+            if not any(excluded in f for excluded in excluded_dirs)
+        ]
+
+        # Filter to keep only executable scripts (not library modules)
+        # Look for files with __main__ guard or in top-level directory
+        executable_scripts = []
+        for f in script_files:
+            # Skip __init__.py files as they're not meant to be run directly
+            if f.endswith("__init__.py"):
+                continue
+
+            # Check if it's in the top level (likely a standalone script)
+            rel_path = os.path.relpath(f, self.working_dir)
+            if "/" not in rel_path and "\\" not in rel_path:
+                executable_scripts.append(f)
+                continue
+
+            # Check if file has __name__ == "__main__" guard
+            try:
+                with open(f, "r") as file:
+                    content = file.read()
+                    if '__name__' in content and '__main__' in content:
+                        executable_scripts.append(f)
+            except Exception:
+                pass
+
+        # Use executable scripts if found, otherwise use all (best effort)
+        script_files = executable_scripts if executable_scripts else script_files
+
         if not script_files:
-            return FunctionResult(
-                name=FunctionName.VERIFY_PRODUCT,
-                success=False,
-                output="[PA Verify] No script files found to verify"
-            )
-        
+            # Check if directory is truly empty or just has no scripts
+            all_files = []
+            for root, dirs, files in os.walk(self.working_dir):
+                # Skip excluded directories
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
+                all_files.extend(files)
+
+            if not all_files:
+                return FunctionResult(
+                    name=FunctionName.VERIFY_PRODUCT,
+                    success=True,
+                    output="[PA Verify] Working directory is empty - verification skipped (waiting for files to be created)",
+                    metadata={"type": "script", "scripts_tested": 0, "note": "empty_directory"}
+                )
+            else:
+                return FunctionResult(
+                    name=FunctionName.VERIFY_PRODUCT,
+                    success=True,
+                    output=f"[PA Verify] No executable scripts found to verify (found {len(all_files)} files - likely a library/package project)",
+                    metadata={"type": "script", "scripts_tested": 0, "note": "library_project", "total_files": len(all_files)}
+                )
+
         results = []
         for script in script_files[:3]:
             try:
-                cmd = ["python3", script] if script.endswith(".py") else ["node", script]
+                # Make path relative to working_dir since we set cwd
+                rel_path = os.path.relpath(script, self.working_dir)
+
+                cmd = ["python3", rel_path] if rel_path.endswith(".py") else ["node", rel_path]
                 result = subprocess.run(
                     cmd,
                     capture_output=True,

@@ -81,13 +81,14 @@ class EventType(Enum):
 
 class ControllerState(Enum):
     """States of the Claude Code Controller."""
-    
+
     IDLE = auto()           # Not running
     STARTING = auto()       # Process starting up
     READY = auto()          # Waiting for input
     PROCESSING = auto()     # Executing a task
     WAITING_CONFIRM = auto() # Waiting for user confirmation
     STOPPING = auto()       # Shutting down
+    DONE = auto()           # Task completed successfully
     ERROR = auto()          # Error state
 
 

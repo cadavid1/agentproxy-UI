@@ -32,3 +32,26 @@ sessions/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Build artifacts
+*.egg-info/
+build/
+dist/
+
+# Vim undo files
+*.un~
+
+# Sandbox directories
+sandbox/
+.agentproxy-plans/
+
+# Test files should be in tests/ directory only
+/test_*.py
+
+# Documentation should be in docs/ directory only
+/PHASE*.md
+/SECURITY_FIX*.md
+/GEMINI*.md
+/*_SUMMARY.md
+/*_COMPLETE.md
+/*_FIX*.md

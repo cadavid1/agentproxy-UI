@@ -7,26 +7,31 @@ Observes Claude's output, reasons about progress, and decides next actions.
 """
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
-from gemini_client import GeminiClient
+from .gemini_client import GeminiClient
+from .telemetry import get_telemetry
 
-# Load .env from project root
-_env_path = Path(__file__).parent / ".env"
+# Load .env from project root (go up from agentproxy/ to project root)
+_env_path = Path(__file__).parent.parent / ".env"
 if _env_path.exists():
     load_dotenv(_env_path)
-from function_executor import (
+else:
+    # Try current working directory as fallback
+    load_dotenv()
+from .function_executor import (
     FunctionExecutor,
     FunctionCall,
     FunctionResult,
     FunctionName,
     FUNCTION_DECLARATIONS,
 )
-from models import PAReasoning, AgentLoopOutput
-from pa_memory import PAMemory
+from .models import PAReasoning, AgentLoopOutput
+from .pa_memory import PAMemory
 
 
 class PAAgent:
@@ -86,12 +91,25 @@ You must output:
 - Use SEND_TO_CLAUDE to guide Claude's next action
 - Use VERIFY_CODE / RUN_TESTS before marking done
 - Only MARK_DONE when ALL requirements are verified working
+
+## CRITICAL: WHAT "DONE" MEANS
+- **The CURRENT TASK (user's original request) is the ONLY requirement**
+- The TASK BREAKDOWN is just a suggested approach - NOT additional requirements
+- When verification succeeds, ask: "Does this satisfy the ORIGINAL TASK?"
+  - If YES → Call MARK_DONE immediately
+  - If NO → Continue work
+- Examples:
+  - Task: "create hello world script" + Verification: script runs & prints "Hello, World!" → DONE
+  - Task: "add login page" + Breakdown says "add validation" but task didn't → Still DONE if page works
+- **Don't add requirements that weren't in the original task**
+- **Don't keep iterating on hallucinated details from the breakdown**
+
 - NEVER request human input - YOU are the human proxy
 - If Claude asks questions, answer them based on the mission/task context
-- Keep pushing Claude until the task is ACTUALLY DONE and VERIFIED
 
 ## TASK MANAGEMENT
 - At the START of a new task, break it down into subtasks using CREATE_TASK
+- The breakdown is a GUIDE for approach, not a requirements checklist
 - Track progress by updating task status as work progresses
 - Mark tasks complete when verified done
 - Use the task list to decide what to assign Claude next
@@ -128,6 +146,7 @@ You must output:
         # State
         self._history: List[Dict[str, Any]] = []
         self._is_done = False
+        self._consecutive_errors = 0  # Track consecutive Gemini errors
         self._iteration = 0
     
     # =========================================================================
@@ -301,31 +320,65 @@ You must output:
     def run_iteration(self, recent_claude_output: str) -> Tuple[PAReasoning, FunctionResult]:
         """
         Run a single agent loop iteration.
-        
+
         Args:
             recent_claude_output: Most recent output from Claude.
-            
+
         Returns:
             Tuple of (PA reasoning, function execution result).
         """
+        telemetry = get_telemetry()
         self._iteration += 1
-        
-        # Build prompt
-        user_prompt = self._build_iteration_prompt(recent_claude_output)
-        system_prompt = self.SYSTEM_PROMPT.format(
-            functions=self._build_functions_description()
-        )
-        
-        # Get Gemini response
-        if not self._gemini:
-            output = self._fallback_output()
+
+        # Start OTEL span for PA reasoning if enabled
+        if telemetry.enabled and telemetry.tracer:
+            reasoning_span = telemetry.tracer.start_span(
+                "pa.reasoning_loop",
+                attributes={
+                    "pa.iteration": self._iteration,
+                    "pa.output_length": len(recent_claude_output),
+                }
+            )
+            start_time = time.time()
         else:
-            image_paths = self._collect_image_paths()
-            response = self._gemini.call(system_prompt, user_prompt, image_paths or None)
-            output = self._parse_agent_output(response)
-        
-        # Execute function
-        result = self._executor.execute(output.function_call)
+            reasoning_span = None
+
+        try:
+            # Build prompt
+            user_prompt = self._build_iteration_prompt(recent_claude_output)
+            system_prompt = self.SYSTEM_PROMPT.format(
+                functions=self._build_functions_description()
+            )
+
+            # Get Gemini response
+            if not self._gemini:
+                output = self._fallback_output()
+            else:
+                image_paths = self._collect_image_paths()
+                response = self._gemini.call(system_prompt, user_prompt, image_paths or None)
+                output = self._parse_agent_output(response)
+
+            # Execute function
+            result = self._executor.execute(output.function_call)
+
+            # Record OTEL metrics
+            if reasoning_span:
+                duration = time.time() - start_time
+                telemetry.pa_reasoning_duration.record(duration)
+                telemetry.pa_decisions.add(1, {"decision": output.reasoning.decision})
+                reasoning_span.set_attribute("pa.decision", output.reasoning.decision)
+                reasoning_span.set_attribute("pa.function", output.function_call.name.value)
+                reasoning_span.end()
+        except Exception as e:
+            if reasoning_span:
+                try:
+                    from opentelemetry import trace as otel_trace
+                    reasoning_span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(e)))
+                    reasoning_span.record_exception(e)
+                except ImportError:
+                    pass
+                reasoning_span.end()
+            raise
         
         # Check if done
         if result.metadata.get("done"):
@@ -374,7 +427,10 @@ FILES TRACKED: {', '.join(self._memory.session.project_files.keys()) or 'None'}
         return f"""
 {self._project_context}
 
-## TASK BREAKDOWN
+## ORIGINAL TASK (THE ONLY REQUIREMENT)
+{self._memory.session.user_prompt or 'Not specified'}
+
+## TASK BREAKDOWN (SUGGESTED APPROACH ONLY - NOT ADDITIONAL REQUIREMENTS)
 {task_breakdown}
 
 ## CURRENT PROGRESS
@@ -393,6 +449,7 @@ FILES TRACKED: {', '.join(self._memory.session.project_files.keys()) or 'None'}
 {recent_claude_output[:3000]}
 
 ---
+REMEMBER: When verification succeeds, check if the ORIGINAL TASK is satisfied, NOT the breakdown.
 Based on current progress, provide your REASONING and FUNCTION_CALL in JSON format.
 """
     
@@ -427,54 +484,151 @@ Based on current progress, provide your REASONING and FUNCTION_CALL in JSON form
     
     def _parse_agent_output(self, response: str) -> AgentLoopOutput:
         """Parse Gemini's response into structured output."""
+        # Detect Gemini error responses
+        if response.startswith("[GEMINI_ERROR:"):
+            error_info = self._parse_gemini_error(response)
+            return self._error_output(error_info)
+
         try:
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
-            
+
             if json_start >= 0 and json_end > json_start:
                 json_str = response[json_start:json_end]
                 data = json.loads(json_str)
-                
+
                 reasoning = PAReasoning(
                     current_state=data.get("reasoning", {}).get("current_state", ""),
                     claude_progress=data.get("reasoning", {}).get("claude_progress", ""),
                     insights=data.get("reasoning", {}).get("insights", ""),
                     decision=data.get("reasoning", {}).get("decision", ""),
                 )
-                
+
                 func_data = data.get("function_call", {})
                 func_name = func_data.get("name", "send_to_claude")
-                
+
                 try:
                     name_enum = FunctionName(func_name)
                 except ValueError:
                     name_enum = FunctionName.SEND_TO_CLAUDE
-                
+
                 function_call = FunctionCall(
                     name=name_enum,
                     arguments=func_data.get("arguments", {}),
                 )
-                
+
+                # Reset error counter on successful parse
+                self._consecutive_errors = 0
+
                 return AgentLoopOutput(reasoning=reasoning, function_call=function_call)
-                
+
         except (json.JSONDecodeError, KeyError):
             pass
-        
-        # Fallback
-        return self._fallback_output()
-    
-    def _fallback_output(self) -> AgentLoopOutput:
+
+        # Fallback for unexpected parsing errors
+        return self._fallback_output("Response format invalid")
+
+    def _parse_gemini_error(self, error_string: str) -> dict:
+        """
+        Parse Gemini error string to extract error metadata.
+
+        Format: [GEMINI_ERROR:error_type:status_code:message] or [GEMINI_ERROR:error_type:message]
+
+        Returns:
+            dict with keys: error_type, status_code, message
+        """
+        try:
+            # Remove brackets and split
+            content = error_string.strip("[]")
+            parts = content.split(":", 3)  # Split into max 4 parts
+
+            if len(parts) >= 3:
+                # Has status code
+                if parts[2].isdigit():
+                    return {
+                        "error_type": parts[1],
+                        "status_code": int(parts[2]),
+                        "message": parts[3] if len(parts) > 3 else "Unknown error",
+                    }
+                # No status code
+                return {
+                    "error_type": parts[1],
+                    "status_code": None,
+                    "message": ":".join(parts[2:]),
+                }
+        except (IndexError, ValueError):
+            pass
+
+        return {
+            "error_type": "unknown",
+            "status_code": None,
+            "message": error_string,
+        }
+
+    def _error_output(self, error_info: dict) -> AgentLoopOutput:
+        """Return output for Gemini API errors after retries exhausted."""
+        error_type = error_info.get("error_type", "unknown")
+        status_code = error_info.get("status_code")
+        message = error_info.get("message", "Unknown error")
+
+        # Increment consecutive error count
+        self._consecutive_errors += 1
+
+        # After 3 consecutive errors, request session save
+        if self._consecutive_errors >= 3:
+            session_id = self._memory.session.session_id
+
+            return AgentLoopOutput(
+                reasoning=PAReasoning(
+                    current_state=f"Gemini API failure: {error_type} (3+ consecutive errors)",
+                    claude_progress="Unable to verify - API unavailable",
+                    insights=f"Repeated Gemini errors: {message}. Saving session for resumption.",
+                    decision=f"Save session state and exit gracefully. Session ID: {session_id}",
+                ),
+                function_call=FunctionCall(
+                    name=FunctionName.SAVE_SESSION,
+                    arguments={
+                        "reason": f"Gemini API failure after 3 consecutive errors: {error_type} - {message}",
+                        "error_type": error_type,
+                        "status_code": status_code,
+                    }
+                ),
+            )
+
+        # For first few errors, use NO_OP to allow Claude to continue
+        # The main loop will preserve the last valid instruction
+        return AgentLoopOutput(
+            reasoning=PAReasoning(
+                current_state=f"Gemini API error: {error_type}",
+                claude_progress="Unknown (verification unavailable)",
+                insights=f"Error #{self._consecutive_errors}: {message}. Allowing Claude to continue with last instruction.",
+                decision=f"Monitor without changing instruction (will save session after {3 - self._consecutive_errors} more errors)",
+            ),
+            function_call=FunctionCall(
+                name=FunctionName.NO_OP,
+                arguments={
+                    "reason": f"Gemini {error_type} error (attempt {self._consecutive_errors}/3) - preserving instruction context",
+                    "error_type": error_type,
+                    "status_code": status_code,
+                }
+            ),
+        )
+
+    def _fallback_output(self, reason: str = "Response format invalid") -> AgentLoopOutput:
         """Return fallback output when parsing fails - uses NO_OP to avoid overwriting queued instructions."""
+        # Increment error counter for parse failures too
+        self._consecutive_errors += 1
+
         return AgentLoopOutput(
             reasoning=PAReasoning(
                 current_state="Parsing error - continuing observation",
                 claude_progress="Unknown",
-                insights="",
-                decision="Continue monitoring Claude (Gemini unavailable)",
+                insights=f"Failed to parse Gemini response: {reason}. Preserving instruction context.",
+                decision=f"Continue monitoring Claude with last valid instruction (parse error #{self._consecutive_errors})",
             ),
             function_call=FunctionCall(
                 name=FunctionName.NO_OP,
-                arguments={"reason": "Gemini response parsing failed"}
+                arguments={"reason": f"Gemini response parsing failed: {reason} - preserving instruction context"}
             ),
         )
     
@@ -522,27 +676,27 @@ Based on current progress, provide your REASONING and FUNCTION_CALL in JSON form
         if not self._gemini:
             return f"# Task: {task}\n\n- [ ] Complete the task"
         
-        breakdown_prompt = f"""Break down this coding task into HIGH-LEVEL MILESTONES.
+        breakdown_prompt = f"""Break down this coding task into a SUGGESTED APPROACH.
 
 TASK: {task}
 
-RULES FOR STEPS:
-- Create only 3-5 steps maximum
-- Each step must be INDEPENDENTLY EXECUTABLE by an AI coding agent
-- Each step should take 1-3 Claude iterations to complete
-- Steps should be coarse milestones, NOT micro-tasks
+RULES:
+- Create only 2-4 suggested steps
+- Each step is a suggested milestone, NOT a requirement
+- Steps should be coarse suggestions, NOT detailed specifications
+- DO NOT add requirements that aren't in the original task
+- DO NOT specify implementation details like file names unless the task explicitly requires them
 
 FORMAT:
 ## Goal
-[One sentence]
+[Restate the original task in one sentence]
 
-## Steps
-- [ ] Step 1: [High-level milestone]
-- [ ] Step 2: [High-level milestone]
-- [ ] Step 3: [High-level milestone]
+## Suggested Approach
+- [ ] Step 1: [Suggested milestone]
+- [ ] Step 2: [Suggested milestone]
 
-## Done When
-[Success criteria]"""
+## Success Criteria
+[What would prove the ORIGINAL TASK is complete - nothing more, nothing less]"""
         
         try:
             return self._gemini.call(

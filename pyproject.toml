@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentproxy"
+version = "0.2.0"
+description = "AI supervisor layer for orchestrating coding agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "agentproxy contributors"}
+]
+keywords = ["ai", "agent", "supervisor", "claude", "llm", "devops"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# Core dependencies (always installed)
+dependencies = [
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+# Server dependencies
+server = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+]
+
+# Telemetry dependencies (OTEL)
+telemetry = [
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp>=1.20.0",
+    "opentelemetry-instrumentation-fastapi>=0.41b0",
+]
+
+# Plugin system dependencies (future)
+plugins = [
+    # No extra deps initially, may add later
+]
+
+# Development dependencies
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+
+# All optional dependencies
+all = [
+    "agentproxy[server,telemetry,plugins,dev]",
+]
+
+[project.scripts]
+pa = "agentproxy.cli:main"
+pa-server = "agentproxy.server:main"
+
+[project.urls]
+Homepage = "https://github.com/allenday/agentproxy"
+Repository = "https://github.com/allenday/agentproxy"
+Issues = "https://github.com/allenday/agentproxy/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentproxy*"]
+exclude = ["tests*", "sandbox*", "sessions*", "venv*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
